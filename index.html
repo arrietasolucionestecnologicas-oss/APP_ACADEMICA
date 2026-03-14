@@ -133,28 +133,38 @@
     </main>
 
     <nav class="bg-white border-t border-gray-300 flex justify-around p-2 pb-6 shadow-[0_-2px_10px_rgba(0,0,0,0.1)] z-10 shrink-0">
-        <button onclick="switchTab('tabCaptura', 'Nueva Captura')" class="flex flex-col items-center w-1/3 text-gray-500 hover:iub-blue-text nav-btn active-nav">
+        <button onclick="switchTab('tabCaptura', 'Nueva Captura')" class="flex flex-col items-center w-1/4 text-gray-500 hover:iub-blue-text nav-btn active-nav">
             <span class="text-2xl">📷</span>
-            <span class="text-xs font-semibold mt-1">Captura</span>
+            <span class="text-[10px] font-semibold mt-1">Captura</span>
         </button>
-        <button onclick="switchTab('tabModulos', 'Gestor de Módulos')" class="flex flex-col items-center w-1/3 text-gray-500 hover:iub-blue-text nav-btn">
+        <button onclick="switchTab('tabModulos', 'Gestor de Módulos')" class="flex flex-col items-center w-1/4 text-gray-500 hover:iub-blue-text nav-btn">
             <span class="text-2xl">📚</span>
-            <span class="text-xs font-semibold mt-1">Módulos</span>
+            <span class="text-[10px] font-semibold mt-1">Módulos</span>
         </button>
-        <button onclick="switchTab('tabAjustes', 'Configuración')" class="flex flex-col items-center w-1/3 text-gray-500 hover:iub-blue-text nav-btn">
+        <button onclick="switchTab('tabAjustes', 'Configuración')" class="flex flex-col items-center w-1/4 text-gray-500 hover:iub-blue-text nav-btn">
             <span class="text-2xl">⚙️</span>
-            <span class="text-xs font-semibold mt-1">Ajustes</span>
+            <span class="text-[10px] font-semibold mt-1">Ajustes</span>
         </button>
     </nav>
 
-    <div id="imageModal" class="absolute inset-0 bg-black bg-opacity-90 z-50 hide flex flex-col">
-        <div class="flex justify-between items-center p-4 shrink-0">
+    <div id="imageModal" class="absolute inset-0 bg-black bg-opacity-95 z-50 hide flex flex-col">
+        <div class="flex justify-between items-center p-4 shrink-0 border-b border-gray-800">
             <span id="modalDate" class="text-white text-sm font-bold"></span>
             <button id="btnCloseModal" class="text-white text-3xl font-bold">&times;</button>
         </div>
-        <div class="flex-1 flex justify-center items-center p-2 overflow-hidden">
+        
+        <div class="flex-1 flex justify-center items-center p-2 overflow-hidden relative">
+            <button id="btnMoveLeft" class="absolute left-2 text-white bg-black bg-opacity-50 p-3 rounded-full text-xl z-20">◀</button>
             <img id="fullImage" class="max-w-full max-h-full object-contain">
+            <button id="btnMoveRight" class="absolute right-2 text-white bg-black bg-opacity-50 p-3 rounded-full text-xl z-20">▶</button>
         </div>
+
+        <div class="bg-gray-900 flex justify-around p-3 shrink-0">
+            <button id="btnShare" class="flex flex-col items-center text-blue-400 font-semibold text-xs"><span class="text-xl mb-1">📤</span>Compartir</button>
+            <button id="btnDownload" class="flex flex-col items-center text-green-400 font-semibold text-xs"><span class="text-xl mb-1">⬇️</span>Descargar</button>
+            <button id="btnDelete" class="flex flex-col items-center text-red-500 font-semibold text-xs"><span class="text-xl mb-1">🗑️</span>Eliminar</button>
+        </div>
+        
         <div id="modalNote" class="bg-white p-4 text-gray-800 text-sm overflow-y-auto max-h-32 shrink-0"></div>
     </div>
 
