@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>University Vault</title>
+    <link rel="manifest" href="manifest.json">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        .cuadricula {
+            background-color: #ffffff;
+            background-image: linear-gradient(#e5e7eb 1px, transparent 1px), linear-gradient(90deg, #e5e7eb 1px, transparent 1px);
+            background-size: 20px 20px;
+            touch-action: none;
+        }
+        canvas { touch-action: none; }
+    </style>
+</head>
+<body class="bg-gray-100 font-sans antialiased text-gray-800">
+    <div class="max-w-md mx-auto bg-white min-h-screen shadow-lg flex flex-col">
+        <header class="bg-blue-600 text-white p-4 text-center font-bold text-xl shadow-md">
+            University Vault
+        </header>
+
+        <main class="flex-1 p-4 space-y-4 overflow-y-auto">
+            <div class="grid grid-cols-2 gap-4">
+                <div>
+                    <label class="block text-sm font-semibold mb-1">Cuatrimestre</label>
+                    <input type="number" id="cuatrimestreInput" value="7" class="w-full p-2 border rounded focus:ring-2 focus:ring-blue-500 outline-none">
+                </div>
+                <div>
+                    <label class="block text-sm font-semibold mb-1">Materia</label>
+                    <input type="text" id="materiaInput" placeholder="Ej: Energías Renovables" class="w-full p-2 border rounded focus:ring-2 focus:ring-blue-500 outline-none">
+                </div>
+            </div>
+
+            <div>
+                <label class="block text-sm font-semibold mb-1">Modo de Captura</label>
+                <select id="modoSelect" class="w-full p-2 border rounded bg-white outline-none">
+                    <option value="FOTO">Cámara (Pizarra/Tablero)</option>
+                    <option value="NOTA_SPEN">Nota a Mano (S-Pen)</option>
+                </select>
+            </div>
+
+            <div id="panelFoto" class="space-y-2">
+                <input type="file" id="cameraInput" accept="image/*" capture="environment" class="hidden">
+                <button onclick="document.getElementById('cameraInput').click()" class="w-full bg-gray-200 hover:bg-gray-300 text-gray-800 font-semibold py-3 rounded border border-gray-400 flex justify-center items-center">
+                    📸 Tomar Foto
+                </button>
+                <div id="previewContainer" class="hidden rounded border bg-gray-50 h-48 flex items-center justify-center overflow-hidden">
+                    <img id="imagePreview" class="max-h-full max-w-full object-contain">
+                </div>
+            </div>
+
+            <div id="panelSpen" class="hidden space-y-2">
+                <div class="flex justify-between items-center">
+                    <span class="text-xs text-blue-600 font-semibold">Modo S-Pen (Solo lápiz)</span>
+                    <button id="btnLimpiarCanvas" class="text-xs text-red-500 font-semibold px-2 py-1 border border-red-500 rounded">Limpiar</button>
+                </div>
+                <div class="border-2 border-gray-300 rounded overflow-hidden">
+                    <canvas id="canvasNota" width="400" height="300" class="cuadricula w-full h-64 cursor-crosshair"></canvas>
+                </div>
+            </div>
+
+            <div>
+                <label class="block text-sm font-semibold mb-1">Apuntes Adicionales</label>
+                <textarea id="textoNota" rows="3" class="w-full p-2 border rounded focus:ring-2 focus:ring-blue-500 outline-none resize-none" placeholder="Escribe algo aquí..."></textarea>
+            </div>
+
+            <button id="btnGuardar" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 rounded shadow-lg transition duration-200">
+                💾 Guardar en Vault
+            </button>
+            
+            <div id="statusMessage" class="text-center text-sm font-semibold hidden py-2"></div>
+        </main>
+    </div>
+    <script src="app.js"></script>
+</body>
+</html>
