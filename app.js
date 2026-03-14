@@ -1,6 +1,6 @@
-// CONFIGURACIÓN CRÍTICA: Reemplazar con la URL generada al publicar el script en GAS
+// CONFIGURACIÓN: Reemplaza con tu URL
 const GAS_URL = "https://script.google.com/macros/s/AKfycbyPIv-c9UqYflEdfiX1aCoCSHnNOz0qCGcXRkH8wxaRZd-c4bHYPOh0qbfkSJ5-Oij-/exec";
-// Elementos del DOM
+
 const loginScreen = document.getElementById('loginScreen');
 const pinInput = document.getElementById('pinInput');
 const btnLogin = document.getElementById('btnLogin');
@@ -38,13 +38,11 @@ const modalDate = document.getElementById('modalDate');
 const modalNote = document.getElementById('modalNote');
 const btnCloseModal = document.getElementById('btnCloseModal');
 
-// Estado de la App
-let sessionPin = "";
+let sessionPin = sessionStorage.getItem('iubVaultPin') || "";
 let localData = { modules: [], records: [] };
 let isDrawing = false;
 let fotoBase64 = null;
 
-// Inicialización
 function initApp() {
     const cachedData = localStorage.getItem('iubVaultData');
     if (cachedData) {
@@ -52,25 +50,32 @@ function initApp() {
         renderModulesDropdown();
         renderModulesGrid();
     }
+    
+    if (sessionPin) {
+        validarPinRequest(sessionPin, true);
+    } else {
+        loginScreen.classList.remove('hide');
+    }
 }
 
-// Lógica de Login
-btnLogin.addEventListener('click', async () => {
-    const pin = pinInput.value;
-    if (pin.length < 4) return;
-    
-    btnLogin.textContent = "Verificando...";
-    btnLogin.disabled = true;
+async function validarPinRequest(pin, isSilent = false) {
+    if (!isSilent) {
+        btnLogin.textContent = "Verificando...";
+        btnLogin.disabled = true;
+    }
 
     try {
         const res = await fetch(GAS_URL, {
             method: 'POST',
+            headers: { "Content-Type": "text/plain;charset=utf-8" },
             body: JSON.stringify({ action: "sync", pin: pin })
         });
+        
         const result = await res.json();
 
         if (result.status === "success") {
             sessionPin = pin;
+            sessionStorage.setItem('iubVaultPin', pin);
             localData.modules = result.modules;
             localData.records = result.records;
             localStorage.setItem('iubVaultData', JSON.stringify(localData));
@@ -79,41 +84,38 @@ btnLogin.addEventListener('click', async () => {
             renderModulesDropdown();
             renderModulesGrid();
         } else {
+            throw new Error(result.message);
+        }
+    } catch (e) {
+        console.error(e);
+        if (!isSilent) {
             loginError.classList.remove('hide');
             pinInput.value = "";
+        } else {
+            sessionStorage.removeItem('iubVaultPin');
+            loginScreen.classList.remove('hide');
         }
-    } catch (e) {
-        alert("Error de conexión. Verifica la URL de GAS.");
     } finally {
-        btnLogin.textContent = "Desbloquear";
-        btnLogin.disabled = false;
+        if (!isSilent) {
+            btnLogin.textContent = "Desbloquear";
+            btnLogin.disabled = false;
+        }
     }
+}
+
+btnLogin.addEventListener('click', () => {
+    const pin = pinInput.value.trim();
+    if (pin.length < 4) return;
+    validarPinRequest(pin, false);
 });
 
-// Sincronización Manual
 btnSync.addEventListener('click', async () => {
+    if (!sessionPin) return;
     btnSync.textContent = "↻...";
-    try {
-        const res = await fetch(GAS_URL, {
-            method: 'POST',
-            body: JSON.stringify({ action: "sync", pin: sessionPin })
-        });
-        const result = await res.json();
-        if (result.status === "success") {
-            localData.modules = result.modules;
-            localData.records = result.records;
-            localStorage.setItem('iubVaultData', JSON.stringify(localData));
-            renderModulesDropdown();
-            renderModulesGrid();
-        }
-    } catch (e) {
-        console.error("Error sync", e);
-    } finally {
-        btnSync.textContent = "↻ Sync";
-    }
+    await validarPinRequest(sessionPin, true);
+    btnSync.textContent = "↻ Sync";
 });
 
-// Navegación
 function switchTab(tabId, title) {
     document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
     document.getElementById(tabId).classList.add('active');
@@ -127,7 +129,6 @@ function switchTab(tabId, title) {
     event.currentTarget.classList.add('iub-blue-text');
 }
 
-// Renderizar UI Basada en Caché
 function renderModulesDropdown() {
     materiaSelect.innerHTML = '<option value="">Selecciona...</option>';
     localData.modules.forEach(mod => {
@@ -150,7 +151,6 @@ function renderModulesGrid() {
     });
 }
 
-// Galería y Modal (Miniaturas CSS object-cover)
 function openGallery(materia) {
     galeriaTitulo.textContent = materia;
     galeriaGrid.innerHTML = '';
@@ -161,7 +161,6 @@ function openGallery(materia) {
         div.className = "aspect-square bg-gray-200 rounded overflow-hidden shadow-sm cursor-pointer relative";
         
         if (r.url) {
-            // Se usa la URL original pero recortada a miniatura por CSS para no requerir procesamiento backend
             div.innerHTML = `<img src="${r.url}" class="w-full h-full object-cover">
                              <div class="absolute bottom-0 bg-black bg-opacity-50 w-full text-white text-[10px] text-center">${r.fecha}</div>`;
         } else {
@@ -191,7 +190,6 @@ btnCloseModal.addEventListener('click', () => {
     fullImage.src = "";
 });
 
-// Lógica de Captura UI
 modoSelect.addEventListener('change', (e) => {
     if (e.target.value === 'FOTO') {
         panelFoto.classList.remove('hidden');
@@ -216,13 +214,12 @@ cameraInput.addEventListener('change', (e) => {
     }
 });
 
-// Canvas S-Pen
 function initCanvas() {
     ctx.fillStyle = "white";
     ctx.fillRect(0, 0, canvas.width, canvas.height);
     ctx.lineWidth = 2;
     ctx.lineCap = 'round';
-    ctx.strokeStyle = '#0033A0'; // Tinta color institucional
+    ctx.strokeStyle = '#0033A0';
 }
 initCanvas();
 
@@ -252,7 +249,6 @@ canvas.addEventListener('pointerup', (e) => {
     e.preventDefault();
 });
 
-// Enviar a GAS
 btnGuardar.addEventListener('click', async () => {
     const cuatrimestre = document.getElementById('cuatrimestreInput').value;
     const materia = materiaSelect.value;
@@ -283,12 +279,15 @@ btnGuardar.addEventListener('click', async () => {
     btnGuardar.disabled = true;
 
     try {
-        const response = await fetch(GAS_URL, { method: 'POST', body: JSON.stringify(payload) });
+        const response = await fetch(GAS_URL, { 
+            method: 'POST', 
+            headers: { "Content-Type": "text/plain;charset=utf-8" },
+            body: JSON.stringify(payload) 
+        });
         const result = await response.json();
         
         if (result.status === "success") {
             setStatus("✅ Guardado", "green");
-            // Agregar a caché local instantáneamente
             localData.records.push({
                 id: result.id, fecha: result.fecha, cuatrimestre: cuatrimestre,
                 materia: materia, tipo: modo, url: result.url, nota: textoNota
