@@ -1,8 +1,6 @@
 // CONFIGURACIÓN: Reemplaza con tu URL
 const GAS_URL = "https://script.google.com/macros/s/AKfycbyPIv-c9UqYflEdfiX1aCoCSHnNOz0qCGcXRkH8wxaRZd-c4bHYPOh0qbfkSJ5-Oij-/exec";
 
-
-
 const loginScreen = document.getElementById('loginScreen');
 const pinInput = document.getElementById('pinInput');
 const btnLogin = document.getElementById('btnLogin');
@@ -48,10 +46,18 @@ const modalDate = document.getElementById('modalDate');
 const modalNote = document.getElementById('modalNote');
 const btnCloseModal = document.getElementById('btnCloseModal');
 
+const btnMoveLeft = document.getElementById('btnMoveLeft');
+const btnMoveRight = document.getElementById('btnMoveRight');
+const btnShare = document.getElementById('btnShare');
+const btnDownload = document.getElementById('btnDownload');
+const btnDelete = document.getElementById('btnDelete');
+
 let sessionPin = sessionStorage.getItem('iubVaultPin') || "";
 let localData = { modules: [], records: [] };
 let isDrawing = false;
 let fotoBase64 = null;
+let currentRecordId = null; 
+let currentMateriaGallery = null;
 
 function initApp() {
     const cachedData = localStorage.getItem('iubVaultData');
@@ -82,8 +88,7 @@ async function validarPinRequest(pin, isSilent = false) {
     }
     try {
         const res = await fetch(GAS_URL, {
-            method: 'POST',
-            headers: { "Content-Type": "text/plain;charset=utf-8" },
+            method: 'POST', headers: { "Content-Type": "text/plain;charset=utf-8" },
             body: JSON.stringify({ action: "sync", pin: pin })
         });
         const result = await res.json();
@@ -91,18 +96,21 @@ async function validarPinRequest(pin, isSilent = false) {
             sessionPin = pin;
             sessionStorage.setItem('iubVaultPin', pin);
             localData.modules = result.modules || [];
+            
+            // Si hacemos sync manual, reseteamos el orden a cronológico del backend
             localData.records = result.records || [];
             localStorage.setItem('iubVaultData', JSON.stringify(localData));
+            
             loginScreen.classList.add('hide');
             renderModulesDropdown();
             renderModulesGrid();
+            if(currentMateriaGallery) openGallery(currentMateriaGallery);
             loginError.classList.add('hide');
         } else {
             throw new Error(result.message);
         }
     } catch (e) {
         if (!isSilent) {
-            loginError.textContent = "Error: " + e.message;
             loginError.classList.remove('hide');
             pinInput.value = "";
         } else {
@@ -140,12 +148,12 @@ function switchTab(tabId, title) {
     });
     event.currentTarget.classList.remove('text-gray-500');
     event.currentTarget.classList.add('iub-blue-text');
+    currentMateriaGallery = null;
 }
 
 function renderModulesDropdown() {
     materiaSelect.innerHTML = '<option value="">Selecciona...</option>';
     let selectedCuatri = cuatrimestreInput.value;
-    
     localData.modules.forEach(mod => {
         if(mod.cuatrimestre.toString() === selectedCuatri) {
             const opt = document.createElement('option');
@@ -162,16 +170,19 @@ function renderModulesGrid() {
         const count = localData.records.filter(r => r.materia === mod.nombre).length;
         const div = document.createElement('div');
         div.className = "bg-white p-4 rounded shadow flex justify-between items-center border-l-4 border-blue-800 cursor-pointer";
-        div.innerHTML = `<div><h3 class="font-bold text-gray-800">${mod.nombre} <span class="text-xs font-normal text-gray-400">(Cuatri ${mod.cuatrimestre})</span></h3><p class="text-xs text-gray-500">${count} documentos</p></div><span class="text-blue-800">➔</span>`;
+        div.innerHTML = `<div><h3 class="font-bold text-gray-800">${mod.nombre} <span class="text-xs font-normal text-gray-400">(Q${mod.cuatrimestre})</span></h3><p class="text-xs text-gray-500">${count} items</p></div><span class="text-blue-800">➔</span>`;
         div.onclick = () => openGallery(mod.nombre);
         modulosGrid.appendChild(div);
     });
 }
 
 function openGallery(materia) {
+    currentMateriaGallery = materia;
     galeriaTitulo.textContent = materia;
     galeriaGrid.innerHTML = '';
-    const records = localData.records.filter(r => r.materia === materia).reverse();
+    
+    // Mostramos la galería tal cual esté en localData.records (permite preservar el reordenamiento virtual)
+    const records = localData.records.filter(r => r.materia === materia);
 
     records.forEach(r => {
         const div = document.createElement('div');
@@ -179,9 +190,9 @@ function openGallery(materia) {
         
         if (r.url) {
             div.innerHTML = `<img src="${r.url}" class="w-full h-full object-cover" loading="lazy">
-                             <div class="absolute bottom-0 bg-black bg-opacity-60 w-full text-white text-[10px] text-center py-1">${r.fecha}</div>`;
+                             <div class="absolute bottom-0 bg-black bg-opacity-60 w-full text-white text-[10px] text-center py-1">${r.fecha.substring(5)}</div>`;
         } else {
-            div.innerHTML = `<div class="w-full h-full flex items-center justify-center bg-gray-100 p-2 text-xs text-center">${r.nota.substring(0,30)}...</div>`;
+            div.innerHTML = `<div class="w-full h-full flex items-center justify-center bg-gray-100 p-2 text-xs text-center">${r.nota.substring(0,25)}</div>`;
         }
         div.onclick = () => showModal(r);
         galeriaGrid.appendChild(div);
@@ -191,28 +202,119 @@ function openGallery(materia) {
 
 btnVolverModulos.addEventListener('click', () => switchTab('tabModulos', 'Gestor de Módulos'));
 
+// MODAL Y CRUD OPERATIONS
 function showModal(record) {
+    currentRecordId = record.id;
     modalDate.textContent = `${record.fecha} - ${record.tipo}`;
     fullImage.src = record.url || "";
     fullImage.style.display = record.url ? "block" : "none";
     modalNote.textContent = record.nota || "Sin apuntes.";
     modalNote.style.display = record.nota ? "block" : "none";
+    
+    // Mostrar/Ocultar botones si es nota sin foto
+    btnDownload.style.display = record.url ? "flex" : "none";
+    btnShare.style.display = record.url ? "flex" : "none";
+    
     imageModal.classList.remove('hide');
 }
 
 btnCloseModal.addEventListener('click', () => {
     imageModal.classList.add('hide');
     fullImage.src = "";
+    currentRecordId = null;
 });
 
+// Reordenamiento Virtual (Front-end Only)
+function swapRecords(direction) {
+    if(!currentRecordId || !currentMateriaGallery) return;
+    
+    let subjectRecords = localData.records.filter(r => r.materia === currentMateriaGallery);
+    let subjectIndex = subjectRecords.findIndex(r => r.id === currentRecordId);
+    
+    if(subjectIndex < 0) return;
+    let targetSubjectIndex = subjectIndex + direction;
+    if(targetSubjectIndex < 0 || targetSubjectIndex >= subjectRecords.length) return; // Límites
+    
+    let targetRecordId = subjectRecords[targetSubjectIndex].id;
+    
+    // Hacer el swap en el array global
+    let globalIndex1 = localData.records.findIndex(r => r.id === currentRecordId);
+    let globalIndex2 = localData.records.findIndex(r => r.id === targetRecordId);
+    
+    let temp = localData.records[globalIndex1];
+    localData.records[globalIndex1] = localData.records[globalIndex2];
+    localData.records[globalIndex2] = temp;
+    
+    localStorage.setItem('iubVaultData', JSON.stringify(localData));
+    openGallery(currentMateriaGallery);
+}
+
+btnMoveLeft.addEventListener('click', () => swapRecords(-1));
+btnMoveRight.addEventListener('click', () => swapRecords(1));
+
+// Eliminar Físicamente
+btnDelete.addEventListener('click', async () => {
+    if(!currentRecordId) return;
+    if(!confirm("¿Eliminar definitivamente de la app y Google Drive?")) return;
+    
+    const record = localData.records.find(r => r.id === currentRecordId);
+    let driveId = null;
+    if(record.url && record.url.includes('/d/')) driveId = record.url.split('/d/')[1];
+
+    btnDelete.textContent = "⏳...";
+    try {
+        const response = await fetch(GAS_URL, { 
+            method: 'POST', headers: { "Content-Type": "text/plain;charset=utf-8" }, 
+            body: JSON.stringify({ action: "delete", pin: sessionPin, idRegistro: currentRecordId, fileId: driveId }) 
+        });
+        const result = await response.json();
+        
+        if (result.status === "success") {
+            localData.records = localData.records.filter(r => r.id !== currentRecordId);
+            localStorage.setItem('iubVaultData', JSON.stringify(localData));
+            imageModal.classList.add('hide');
+            openGallery(currentMateriaGallery);
+            renderModulesGrid();
+        } else { alert("Error al eliminar."); }
+    } catch (error) {
+        alert("Error de red.");
+    } finally {
+        btnDelete.innerHTML = `<span class="text-xl mb-1">🗑️</span>Eliminar`;
+    }
+});
+
+// Compartir Nativamente (Web Share API)
+btnShare.addEventListener('click', async () => {
+    const record = localData.records.find(r => r.id === currentRecordId);
+    if (!record || !record.url) return;
+    
+    if (navigator.share) {
+        try {
+            await navigator.share({
+                title: 'Apunte: ' + record.materia,
+                text: record.nota || 'Imagen de clase',
+                url: record.url
+            });
+        } catch (e) { console.log("Share cancelado"); }
+    } else {
+        alert("Tu navegador no soporta compartir nativamente.");
+    }
+});
+
+// Descarga Directa
+btnDownload.addEventListener('click', () => {
+    const record = localData.records.find(r => r.id === currentRecordId);
+    if (record && record.url) {
+        window.open(record.url, '_blank');
+    }
+});
+
+// CAPTURA UI LÓGICA
 modoSelect.addEventListener('change', (e) => {
     if (e.target.value === 'FOTO') {
-        panelFoto.classList.remove('hidden');
-        panelSpen.classList.add('hidden');
+        panelFoto.classList.remove('hidden'); panelSpen.classList.add('hidden');
     } else {
-        panelFoto.classList.add('hidden');
-        panelSpen.classList.remove('hidden');
-        initCanvas();
+        panelFoto.classList.add('hidden'); panelSpen.classList.remove('hidden'); initCanvas();
     }
 });
 
@@ -221,8 +323,7 @@ cameraInput.addEventListener('change', (e) => {
     if (file) {
         const reader = new FileReader();
         reader.onload = function(event) {
-            fotoBase64 = event.target.result;
-            imagePreview.src = fotoBase64;
+            fotoBase64 = event.target.result; imagePreview.src = fotoBase64;
             previewContainer.classList.remove('hidden');
         };
         reader.readAsDataURL(file);
@@ -230,38 +331,24 @@ cameraInput.addEventListener('change', (e) => {
 });
 
 function initCanvas() {
-    ctx.fillStyle = "white";
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-    ctx.lineWidth = 2;
-    ctx.lineCap = 'round';
-    ctx.strokeStyle = '#0033A0';
+    ctx.fillStyle = "white"; ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.lineWidth = 2; ctx.lineCap = 'round'; ctx.strokeStyle = '#0033A0';
 }
 initCanvas();
-
 btnLimpiarCanvas.addEventListener('click', initCanvas);
 
 canvas.addEventListener('pointerdown', (e) => {
     if (e.pointerType !== 'pen') return; 
-    isDrawing = true;
-    const rect = canvas.getBoundingClientRect();
-    ctx.beginPath();
-    ctx.moveTo((e.clientX - rect.left) * (canvas.width / rect.width), (e.clientY - rect.top) * (canvas.height / rect.height));
-    e.preventDefault();
+    isDrawing = true; const rect = canvas.getBoundingClientRect();
+    ctx.beginPath(); ctx.moveTo((e.clientX - rect.left) * (canvas.width / rect.width), (e.clientY - rect.top) * (canvas.height / rect.height)); e.preventDefault();
 });
-
 canvas.addEventListener('pointermove', (e) => {
     if (!isDrawing || e.pointerType !== 'pen') return;
     const rect = canvas.getBoundingClientRect();
-    ctx.lineTo((e.clientX - rect.left) * (canvas.width / rect.width), (e.clientY - rect.top) * (canvas.height / rect.height));
-    ctx.stroke();
-    e.preventDefault();
+    ctx.lineTo((e.clientX - rect.left) * (canvas.width / rect.width), (e.clientY - rect.top) * (canvas.height / rect.height)); ctx.stroke(); e.preventDefault();
 });
-
 canvas.addEventListener('pointerup', (e) => {
-    if (e.pointerType !== 'pen') return;
-    isDrawing = false;
-    ctx.closePath();
-    e.preventDefault();
+    if (e.pointerType !== 'pen') return; isDrawing = false; ctx.closePath(); e.preventDefault();
 });
 
 btnGuardar.addEventListener('click', async () => {
@@ -285,7 +372,7 @@ btnGuardar.addEventListener('click', async () => {
         materia: materia, tipo: modo, textoNota: textoNota, imagenBase64: payloadImage
     };
 
-    setStatus(statusMessage, "Guardando...", "blue");
+    statusMessage.textContent = "Guardando..."; statusMessage.className = "text-center text-sm font-bold py-2 text-blue-600 block";
     btnGuardar.disabled = true;
 
     try {
@@ -294,19 +381,17 @@ btnGuardar.addEventListener('click', async () => {
         });
         const result = await response.json();
         if (result.status === "success") {
-            setStatus(statusMessage, "✅ Guardado", "green");
-            localData.records.push({
+            statusMessage.textContent = "✅ Guardado"; statusMessage.className = "text-center text-sm font-bold py-2 text-green-600 block";
+            localData.records.unshift({
                 id: result.id, fecha: result.fecha, cuatrimestre: cuatrimestre,
                 materia: materia, tipo: modo, url: result.url, nota: textoNota
             });
             localStorage.setItem('iubVaultData', JSON.stringify(localData));
             renderModulesGrid();
             setTimeout(() => resetForm(), 1500);
-        } else {
-            setStatus(statusMessage, "❌ Error", "red");
-        }
+        } else { throw new Error(); }
     } catch (error) {
-        setStatus(statusMessage, "❌ Error de red", "red");
+        statusMessage.textContent = "❌ Error"; statusMessage.className = "text-center text-sm font-bold py-2 text-red-600 block";
     } finally {
         btnGuardar.disabled = false;
     }
@@ -317,7 +402,7 @@ btnAgregarMateria.addEventListener('click', async () => {
     const cuatri = nuevoCuatrimestreInput.value;
     if (!nombre) return;
     
-    setStatus(ajustesStatus, "Agregando...", "blue");
+    ajustesStatus.textContent = "Agregando..."; ajustesStatus.className = "text-center text-sm font-bold py-2 text-blue-600 block";
     btnAgregarMateria.disabled = true;
 
     try {
@@ -328,7 +413,7 @@ btnAgregarMateria.addEventListener('click', async () => {
         const result = await response.json();
         
         if (result.status === "success") {
-            setStatus(ajustesStatus, "✅ Agregada", "green");
+            ajustesStatus.textContent = "✅ Agregada"; ajustesStatus.className = "text-center text-sm font-bold py-2 text-green-600 block";
             localData.modules.push(result.newModule);
             localStorage.setItem('iubVaultData', JSON.stringify(localData));
             renderModulesDropdown();
@@ -337,31 +422,20 @@ btnAgregarMateria.addEventListener('click', async () => {
             setTimeout(() => { ajustesStatus.classList.add('hidden'); }, 2000);
         }
     } catch (e) {
-        setStatus(ajustesStatus, "❌ Error", "red");
+        ajustesStatus.textContent = "❌ Error"; ajustesStatus.className = "text-center text-sm font-bold py-2 text-red-600 block";
     } finally {
         btnAgregarMateria.disabled = false;
     }
 });
 
 btnLimpiarCache.addEventListener('click', () => {
-    localStorage.removeItem('iubVaultData');
-    sessionStorage.removeItem('iubVaultPin');
-    location.reload();
+    localStorage.removeItem('iubVaultData'); sessionStorage.removeItem('iubVaultPin'); location.reload();
 });
 
-function setStatus(element, msg, color) {
-    element.textContent = msg;
-    element.className = `text-center text-sm font-bold py-2 text-${color}-600 block`;
-}
-
 function resetForm() {
-    document.getElementById('textoNota').value = "";
-    fotoBase64 = null;
-    imagePreview.src = "";
-    previewContainer.classList.add('hidden');
-    initCanvas();
-    setStatus(statusMessage, "", "transparent");
-    statusMessage.classList.add("hidden");
+    document.getElementById('textoNota').value = ""; fotoBase64 = null; imagePreview.src = "";
+    previewContainer.classList.add('hidden'); initCanvas();
+    statusMessage.textContent = ""; statusMessage.classList.add("hidden");
 }
 
 initApp();
