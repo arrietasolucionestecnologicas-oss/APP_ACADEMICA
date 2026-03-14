@@ -1,9 +1,6 @@
 // CONFIGURACIÓN: Reemplaza con tu URL
 const GAS_URL = "https://script.google.com/macros/s/AKfycbyPIv-c9UqYflEdfiX1aCoCSHnNOz0qCGcXRkH8wxaRZd-c4bHYPOh0qbfkSJ5-Oij-/exec";
 
-// CONFIGURACIÓN: Reemplaza con tu URL
-const GAS_URL = "URL_DE_TU_WEB_APP_AQUI";
-
 // --- MOTOR DE BASE DE DATOS LOCAL (INDEXEDDB) ---
 const DB_NAME = 'IUBVaultDB';
 const DB_VERSION = 1;
