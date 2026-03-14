@@ -29,7 +29,7 @@
         <p class="text-gray-500 mb-8 text-center">Gestor Documental Académico</p>
         <input type="password" id="pinInput" placeholder="PIN de Acceso" class="w-full max-w-xs p-3 border-2 border-gray-300 rounded text-center text-xl tracking-widest focus:border-blue-800 outline-none mb-4">
         <button id="btnLogin" class="w-full max-w-xs iub-blue text-white font-bold py-3 rounded shadow-lg">Desbloquear</button>
-        <p id="loginError" class="text-red-500 mt-4 text-sm font-semibold hide">PIN Incorrecto</p>
+        <p id="loginError" class="text-red-500 mt-4 text-sm font-semibold hide">PIN Incorrecto o Error de Red</p>
     </div>
 
     <header class="iub-blue text-white p-4 text-center font-bold text-xl shadow-md flex justify-between items-center z-10">
@@ -94,15 +94,13 @@
 
         <div id="tabModulos" class="tab-content max-w-md mx-auto">
             <h2 class="text-lg font-bold iub-blue-text mb-4 border-b-2 border-gray-200 pb-2">Mis Materias</h2>
-            <div id="modulosGrid" class="grid grid-cols-1 gap-4">
-                </div>
+            <div id="modulosGrid" class="grid grid-cols-1 gap-4"></div>
         </div>
 
         <div id="tabGaleria" class="tab-content max-w-md mx-auto">
             <button id="btnVolverModulos" class="mb-4 text-sm font-bold text-gray-600 border px-3 py-1 rounded bg-white shadow-sm">← Volver a Módulos</button>
             <h2 id="galeriaTitulo" class="text-xl font-bold iub-blue-text mb-4">Materia</h2>
-            <div id="galeriaGrid" class="grid grid-cols-3 gap-2">
-                </div>
+            <div id="galeriaGrid" class="grid grid-cols-3 gap-2"></div>
         </div>
 
     </main>
