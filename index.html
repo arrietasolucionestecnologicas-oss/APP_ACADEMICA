@@ -3,171 +3,198 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>IUB Vault</title>
+    <title>IUB Vault v2</title>
     <link rel="manifest" href="manifest.json">
     <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <style>
-        .iub-blue { background-color: #0033A0; }
-        .iub-blue-text { color: #0033A0; }
-        .iub-red { background-color: #D32F2F; }
-        .cuadricula {
-            background-color: #ffffff;
-            background-image: linear-gradient(#e5e7eb 1px, transparent 1px), linear-gradient(90deg, #e5e7eb 1px, transparent 1px);
-            background-size: 20px 20px;
-            touch-action: none;
-        }
-        canvas { touch-action: none; }
-        .tab-content { display: none; }
-        .tab-content.active { display: block; }
+        :root { --iub-blue: #002D72; --iub-accent: #E5E7EB; }
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background-color: #F9FAFB; }
+        .bg-iub { background-color: var(--iub-blue); }
+        .text-iub { color: var(--iub-blue); }
+        
+        /* Patrones de Cuaderno */
+        .bg-lines { background-image: linear-gradient(#e5e7eb 1px, transparent 1px); background-size: 100% 1.5rem; }
+        .bg-grid { background-image: linear-gradient(#e5e7eb 1px, transparent 1px), linear-gradient(90deg, #e5e7eb 1px, transparent 1px); background-size: 1.5rem 1.5rem; }
+        .bg-dots { background-image: radial-gradient(#cbd5e1 1px, transparent 1px); background-size: 1.5rem 1.5rem; }
+        
+        /* UI Elements */
+        .glass-nav { background: rgba(255, 255, 255, 0.9); backdrop-filter: blur(10px); border-top: 1px solid #e5e7eb; }
         .hide { display: none !important; }
+        .tab-content { display: none; animation: fadeIn 0.3s ease-in-out; }
+        .tab-content.active { display: block; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
+        
+        /* Canvas Fullscreen */
+        #drawingOverlay { position: fixed; inset: 0; z-index: 100; background: white; display: flex; flex-direction: column; }
+        #canvasNote { flex: 1; touch-action: none; cursor: crosshair; }
     </style>
 </head>
-<body class="bg-gray-100 font-sans antialiased text-gray-800 h-[100dvh] flex flex-col overflow-hidden">
+<body class="text-gray-800 h-[100dvh] flex flex-col overflow-hidden">
 
-    <div id="loginScreen" class="absolute inset-0 bg-white z-50 flex flex-col justify-center items-center p-4">
-        <h1 class="text-3xl font-bold iub-blue-text mb-2">IUB Vault</h1>
-        <p class="text-gray-500 mb-8 text-center">Gestor Documental</p>
-        <input type="password" id="pinInput" placeholder="PIN de Acceso" class="w-full max-w-xs p-3 border-2 border-gray-300 rounded text-center text-xl tracking-widest focus:border-blue-800 outline-none mb-4">
-        <button id="btnLogin" class="w-full max-w-xs iub-blue text-white font-bold py-3 rounded shadow-lg">Desbloquear</button>
-        <p id="loginError" class="text-red-500 mt-4 text-sm font-semibold hide">Error de conexión.</p>
+    <div id="loginScreen" class="absolute inset-0 bg-white z-[200] flex flex-col justify-center items-center p-6">
+        <div class="w-20 h-20 bg-iub rounded-2xl flex items-center justify-center mb-6 shadow-lg">
+            <span class="text-white text-3xl font-bold">V2</span>
+        </div>
+        <h1 class="text-2xl font-bold text-gray-900 mb-1">IUB Vault</h1>
+        <p class="text-gray-500 mb-8 text-sm">Workspace Académico</p>
+        <input type="password" id="pinInput" placeholder="PIN de Seguridad" class="w-full max-w-xs p-4 bg-gray-50 border border-gray-200 rounded-xl text-center text-xl tracking-[0.5em] focus:border-blue-600 focus:ring-2 focus:ring-blue-100 outline-none transition-all mb-4">
+        <button id="btnLogin" class="w-full max-w-xs bg-gray-900 text-white font-semibold py-4 rounded-xl shadow-md active:scale-95 transition-transform">Desbloquear Workspace</button>
+        <p id="loginError" class="text-red-500 mt-4 text-sm font-medium hide">Credenciales inválidas.</p>
     </div>
 
-    <header class="iub-blue text-white p-4 text-center font-bold text-xl shadow-md flex justify-between items-center z-10 shrink-0">
-        <span id="headerTitle">Nueva Captura</span>
-        <button id="btnSync" class="text-sm bg-white iub-blue-text px-3 py-1 rounded font-bold flex items-center gap-1">
-            ↻ Sync <span id="queueBadge" class="hidden bg-red-600 text-white text-[10px] px-2 py-0.5 rounded-full shadow-inner animate-pulse">0⬆</span>
+    <header class="bg-white px-5 py-4 flex justify-between items-center shrink-0 border-b border-gray-100 shadow-sm z-10">
+        <h1 id="headerTitle" class="text-xl font-bold text-gray-800 tracking-tight">Captura Rápida</h1>
+        <button id="btnSync" class="text-xs bg-gray-100 text-gray-600 px-3 py-1.5 rounded-full font-medium flex items-center gap-2 hover:bg-gray-200 transition-colors">
+            <span id="syncIcon">↻</span> Sync <span id="queueBadge" class="hidden bg-iub text-white px-1.5 py-0.5 rounded-full text-[10px] shadow-sm">0</span>
         </button>
     </header>
 
-    <main class="flex-1 overflow-y-auto p-4 relative z-0" id="mainContainer">
+    <main class="flex-1 overflow-y-auto bg-[#F9FAFB] relative z-0" id="mainContainer">
         
-        <div id="tabCaptura" class="tab-content active space-y-4 max-w-md mx-auto">
-            <div class="grid grid-cols-2 gap-4">
-                <div>
-                    <label class="block text-sm font-semibold mb-1 iub-blue-text">Cuatrimestre</label>
-                    <input type="number" id="cuatrimestreInput" value="7" class="w-full p-2 border rounded outline-none" readonly>
+        <div id="tabCaptura" class="tab-content active p-4 max-w-xl mx-auto space-y-5">
+            
+            <div class="bg-white p-5 rounded-2xl shadow-sm border border-gray-100 space-y-4">
+                <div class="grid grid-cols-2 gap-3">
+                    <div>
+                        <label class="block text-xs font-semibold text-gray-500 mb-1.5 uppercase tracking-wider">Materia</label>
+                        <select id="materiaSelect" class="w-full p-2.5 bg-gray-50 border border-gray-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-500"></select>
+                    </div>
+                    <div>
+                        <label class="block text-xs font-semibold text-gray-500 mb-1.5 uppercase tracking-wider">Tema / Carpeta</label>
+                        <select id="temaSelect" class="w-full p-2.5 bg-gray-50 border border-gray-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-500"></select>
+                    </div>
                 </div>
                 <div>
-                    <label class="block text-sm font-semibold mb-1 iub-blue-text">Materia</label>
-                    <select id="materiaSelect" class="w-full p-2 border rounded bg-white outline-none">
-                        <option value="">Selecciona...</option>
-                    </select>
+                    <label class="block text-xs font-semibold text-gray-500 mb-1.5 uppercase tracking-wider">Etiquetas (Opcional)</label>
+                    <input type="text" id="etiquetasInput" placeholder="Ej: Parcial, Taller, Fórmula..." class="w-full p-2.5 bg-gray-50 border border-gray-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-500">
                 </div>
             </div>
 
-            <div>
-                <label class="block text-sm font-semibold mb-1 iub-blue-text">Modo de Captura</label>
-                <select id="modoSelect" class="w-full p-2 border rounded bg-white outline-none">
-                    <option value="FOTO">Cámara (Pizarra)</option>
-                    <option value="NOTA_SPEN">Nota (S-Pen)</option>
-                </select>
-            </div>
-
-            <div id="panelFoto" class="space-y-2">
-                <input type="file" id="cameraInput" accept="image/*" capture="environment" class="hidden">
-                <button onclick="document.getElementById('cameraInput').click()" class="w-full bg-gray-200 hover:bg-gray-300 text-gray-800 font-semibold py-4 rounded border border-gray-400 flex justify-center items-center text-lg shadow-sm">
-                    📸 Abrir Cámara
+            <div class="grid grid-cols-2 gap-3">
+                <button onclick="document.getElementById('galleryInput').click()" class="bg-white border border-gray-200 p-4 rounded-2xl flex flex-col items-center justify-center gap-2 shadow-sm hover:bg-gray-50 active:scale-95 transition-all">
+                    <span class="text-2xl">🖼️</span>
+                    <span class="text-sm font-semibold text-gray-700">Subir Imágenes</span>
                 </button>
-                <div id="previewContainer" class="hidden rounded border bg-gray-50 h-48 flex items-center justify-center overflow-hidden shadow-inner">
-                    <img id="imagePreview" class="max-h-full max-w-full object-contain">
-                </div>
+                <input type="file" id="galleryInput" accept="image/*" multiple class="hidden">
+                
+                <button onclick="document.getElementById('cameraInput').click()" class="bg-white border border-gray-200 p-4 rounded-2xl flex flex-col items-center justify-center gap-2 shadow-sm hover:bg-gray-50 active:scale-95 transition-all">
+                    <span class="text-2xl">📸</span>
+                    <span class="text-sm font-semibold text-gray-700">Tomar Foto</span>
+                </button>
+                <input type="file" id="cameraInput" accept="image/*" capture="environment" class="hidden">
             </div>
 
-            <div id="panelSpen" class="hidden space-y-2">
-                <div class="flex justify-between items-center">
-                    <span class="text-xs iub-blue-text font-semibold">Modo S-Pen Activado</span>
-                    <button id="btnLimpiarCanvas" class="text-xs text-red-500 font-semibold px-2 py-1 border border-red-500 rounded">Limpiar</button>
-                </div>
-                <div class="border-2 border-gray-300 rounded overflow-hidden shadow-inner">
-                    <canvas id="canvasNota" width="400" height="300" class="cuadricula w-full h-64 cursor-crosshair"></canvas>
-                </div>
-            </div>
-
-            <div>
-                <label class="block text-sm font-semibold mb-1 iub-blue-text">Apuntes</label>
-                <textarea id="textoNota" rows="2" class="w-full p-2 border rounded outline-none resize-none" placeholder="Contexto rápido..."></textarea>
-            </div>
-
-            <button id="btnGuardar" class="w-full iub-red text-white font-bold py-4 rounded shadow-lg text-lg tracking-wide transition-transform active:scale-95">
-                🚀 Capturar Rápido
+            <button id="btnOpenNotebook" class="w-full bg-gray-900 text-white p-4 rounded-2xl flex items-center justify-center gap-3 shadow-md active:scale-95 transition-all">
+                <span class="text-xl">✍️</span>
+                <span class="font-semibold">Abrir Cuaderno S-Pen</span>
             </button>
+
+            <div id="stagingArea" class="hidden space-y-4">
+                <h3 class="text-sm font-bold text-gray-800">Archivos Preparados: <span id="stagingCount">0</span></h3>
+                <div id="stagingGrid" class="grid grid-cols-3 gap-2"></div>
+                
+                <div class="bg-white p-3 rounded-xl border border-gray-200">
+                    <textarea id="textoNota" rows="2" class="w-full p-2 bg-transparent text-sm outline-none resize-none" placeholder="Agregar texto o contexto general..."></textarea>
+                </div>
+
+                <button id="btnGuardar" class="w-full bg-iub text-white font-bold py-4 rounded-xl shadow-lg shadow-blue-900/20 active:scale-95 transition-transform flex justify-center items-center gap-2">
+                    <span>Guardar en Vault</span> <span class="text-xl">➔</span>
+                </button>
+            </div>
             <div id="statusMessage" class="text-center text-sm font-semibold hidden py-2"></div>
         </div>
 
-        <div id="tabModulos" class="tab-content max-w-md mx-auto">
-            <h2 class="text-lg font-bold iub-blue-text mb-4 border-b-2 border-gray-200 pb-2">Mis Materias</h2>
-            <div id="modulosGrid" class="grid grid-cols-1 gap-4"></div>
+        <div id="tabExplorador" class="tab-content p-4 max-w-xl mx-auto">
+            <div class="mb-4">
+                <input type="text" id="searchInput" placeholder="Buscar materia, tema o etiqueta..." class="w-full p-3 bg-white border border-gray-200 rounded-xl shadow-sm outline-none focus:ring-2 focus:ring-blue-100 text-sm">
+            </div>
+            <div id="estructuraGrid" class="space-y-3"></div>
         </div>
 
-        <div id="tabGaleria" class="tab-content max-w-md mx-auto">
-            <button id="btnVolverModulos" class="mb-4 text-sm font-bold text-gray-600 border px-3 py-1 rounded bg-white shadow-sm">← Volver a Módulos</button>
-            <h2 id="galeriaTitulo" class="text-xl font-bold iub-blue-text mb-4">Materia</h2>
-            <div id="galeriaGrid" class="grid grid-cols-3 gap-2"></div>
+        <div id="tabCarpeta" class="tab-content bg-white min-h-full">
+            <div class="sticky top-0 bg-white/90 backdrop-blur-md p-4 flex justify-between items-center border-b border-gray-100 z-10">
+                <button id="btnVolverExplorador" class="text-gray-600 font-medium flex items-center gap-1"><span class="text-xl">‹</span> Volver</button>
+                <button id="btnExportPDF" class="bg-gray-100 text-gray-800 text-xs font-bold px-3 py-1.5 rounded-lg flex items-center gap-1 shadow-sm">📑 Generar PDF</button>
+            </div>
+            <div class="p-4">
+                <h2 id="carpetaTitulo" class="text-2xl font-bold text-gray-900 mb-1">Tema</h2>
+                <p id="carpetaSubtitulo" class="text-sm text-gray-500 mb-6">Materia</p>
+                <div id="galeriaGrid" class="grid grid-cols-2 gap-3 pb-20"></div>
+            </div>
         </div>
 
-        <div id="tabAjustes" class="tab-content max-w-md mx-auto space-y-6">
-            <div class="bg-white p-4 rounded shadow">
-                <h2 class="text-lg font-bold iub-blue-text mb-4">Agregar Materia Nueva</h2>
-                <div class="space-y-3">
-                    <div>
-                        <label class="block text-sm font-semibold mb-1 text-gray-700">Nombre de Materia</label>
-                        <input type="text" id="nuevaMateriaInput" class="w-full p-2 border rounded outline-none focus:ring-2 focus:ring-blue-800" placeholder="Ej: Circuitos II">
-                    </div>
-                    <div>
-                        <label class="block text-sm font-semibold mb-1 text-gray-700">Cuatrimestre</label>
-                        <input type="number" id="nuevoCuatrimestreInput" class="w-full p-2 border rounded outline-none focus:ring-2 focus:ring-blue-800" value="7">
-                    </div>
-                    <button id="btnAgregarMateria" class="w-full iub-blue text-white font-bold py-2 rounded shadow">
-                        + Guardar Materia
-                    </button>
-                    <div id="ajustesStatus" class="text-center text-sm font-semibold hidden py-2"></div>
+        <div id="tabAjustes" class="tab-content p-4 max-w-xl mx-auto space-y-6">
+            <div class="bg-white p-5 rounded-2xl shadow-sm border border-gray-100">
+                <h2 class="text-sm font-bold text-gray-800 uppercase tracking-wider mb-4">Nueva Estructura</h2>
+                <div class="space-y-4">
+                    <input type="number" id="nuevoCuatrimestre" placeholder="Cuatrimestre (Ej: 8)" class="w-full p-3 bg-gray-50 border border-gray-200 rounded-xl text-sm outline-none">
+                    <input type="text" id="nuevaMateria" placeholder="Nombre Materia" class="w-full p-3 bg-gray-50 border border-gray-200 rounded-xl text-sm outline-none">
+                    <input type="text" id="nuevoTema" placeholder="Tema/Carpeta (Ej: Corte 1)" class="w-full p-3 bg-gray-50 border border-gray-200 rounded-xl text-sm outline-none">
+                    <button id="btnAgregarEstructura" class="w-full bg-gray-900 text-white font-bold py-3 rounded-xl shadow active:scale-95 transition-transform">Crear Carpeta</button>
+                    <div id="ajustesStatus" class="text-center text-sm font-semibold hidden"></div>
                 </div>
             </div>
-            
-            <div class="bg-white p-4 rounded shadow">
-                <h2 class="text-lg font-bold text-red-600 mb-2">Mantenimiento</h2>
-                <button id="btnLimpiarCache" class="w-full bg-red-100 text-red-600 border border-red-600 font-bold py-2 rounded">
-                    Limpiar Caché y Salir
-                </button>
-            </div>
+            <button id="btnLimpiarCache" class="w-full bg-red-50 text-red-600 border border-red-200 font-bold py-3 rounded-xl active:scale-95 transition-transform">Cerrar Sesión & Limpiar Caché</button>
         </div>
 
     </main>
 
-    <nav class="bg-white border-t border-gray-300 flex justify-around p-2 pb-6 shadow-[0_-2px_10px_rgba(0,0,0,0.1)] z-10 shrink-0">
-        <button onclick="switchTab('tabCaptura', 'Nueva Captura')" class="flex flex-col items-center w-1/4 text-gray-500 hover:iub-blue-text nav-btn active-nav">
-            <span class="text-2xl">📷</span>
-            <span class="text-[10px] font-semibold mt-1">Captura</span>
+    <nav class="glass-nav flex justify-around p-2 pb-6 z-10 shrink-0">
+        <button onclick="switchTab('tabCaptura', 'Captura Rápida')" class="flex flex-col items-center w-1/3 text-gray-400 hover:text-gray-900 nav-btn active-nav transition-colors">
+            <span class="text-2xl mb-1">⊕</span><span class="text-[10px] font-bold tracking-wide">CREAR</span>
         </button>
-        <button onclick="switchTab('tabModulos', 'Gestor de Módulos')" class="flex flex-col items-center w-1/4 text-gray-500 hover:iub-blue-text nav-btn">
-            <span class="text-2xl">📚</span>
-            <span class="text-[10px] font-semibold mt-1">Módulos</span>
+        <button onclick="switchTab('tabExplorador', 'Explorador')" class="flex flex-col items-center w-1/3 text-gray-400 hover:text-gray-900 nav-btn transition-colors">
+            <span class="text-2xl mb-1">⊞</span><span class="text-[10px] font-bold tracking-wide">VAULT</span>
         </button>
-        <button onclick="switchTab('tabAjustes', 'Configuración')" class="flex flex-col items-center w-1/4 text-gray-500 hover:iub-blue-text nav-btn">
-            <span class="text-2xl">⚙️</span>
-            <span class="text-[10px] font-semibold mt-1">Ajustes</span>
+        <button onclick="switchTab('tabAjustes', 'Configuración')" class="flex flex-col items-center w-1/3 text-gray-400 hover:text-gray-900 nav-btn transition-colors">
+            <span class="text-2xl mb-1">⚙</span><span class="text-[10px] font-bold tracking-wide">AJUSTES</span>
         </button>
     </nav>
 
-    <div id="imageModal" class="absolute inset-0 bg-black bg-opacity-95 z-50 hide flex flex-col">
-        <div class="flex justify-between items-center p-4 shrink-0 border-b border-gray-800">
-            <span id="modalDate" class="text-white text-sm font-bold"></span>
-            <button id="btnCloseModal" class="text-white text-3xl font-bold">×</button>
+    <div id="drawingOverlay" class="hide">
+        <div class="bg-gray-900 text-white p-3 flex justify-between items-center shrink-0 shadow-md z-10">
+            <div class="flex gap-4 items-center">
+                <button id="btnCerrarCanvas" class="text-gray-300 hover:text-white font-bold px-2">✕</button>
+                <div class="flex gap-2">
+                    <button class="w-6 h-6 rounded-full bg-black border-2 border-white ring-2 ring-gray-900 tool-color active-tool" data-color="#000000"></button>
+                    <button class="w-6 h-6 rounded-full bg-blue-700 border-2 border-white tool-color" data-color="#1d4ed8"></button>
+                    <button class="w-6 h-6 rounded-full bg-red-600 border-2 border-white tool-color" data-color="#dc2626"></button>
+                </div>
+            </div>
+            <div class="flex gap-3">
+                <button id="btnBorrarLienzo" class="text-xs bg-gray-800 px-3 py-1.5 rounded-lg border border-gray-700">Limpiar</button>
+                <button id="btnGuardarCanvas" class="text-xs bg-blue-600 font-bold px-3 py-1.5 rounded-lg shadow">Listo ✔</button>
+            </div>
         </div>
-        
-        <div class="flex-1 flex justify-center items-center p-2 overflow-hidden relative">
-            <button id="btnMoveLeft" class="absolute left-2 text-white bg-black bg-opacity-50 p-3 rounded-full text-xl z-20">◀</button>
-            <img id="fullImage" class="max-w-full max-h-full object-contain">
-            <button id="btnMoveRight" class="absolute right-2 text-white bg-black bg-opacity-50 p-3 rounded-full text-xl z-20">▶</button>
+        <div class="bg-gray-800 p-2 flex justify-center gap-4 shrink-0 border-b border-gray-700">
+            <span class="text-xs text-gray-400 font-semibold uppercase self-center">Fondo:</span>
+            <button class="text-xs bg-gray-700 text-white px-2 py-1 rounded tool-bg active-bg" data-bg="bg-white">Blanco</button>
+            <button class="text-xs bg-gray-700 text-white px-2 py-1 rounded tool-bg" data-bg="bg-lines">Raya</button>
+            <button class="text-xs bg-gray-700 text-white px-2 py-1 rounded tool-bg" data-bg="bg-grid">Cuadro</button>
         </div>
+        <canvas id="canvasNote" class="bg-white w-full h-full touch-none"></canvas>
+    </div>
 
-        <div class="bg-gray-900 flex justify-around p-3 shrink-0">
-            <button id="btnShare" class="flex flex-col items-center text-blue-400 font-semibold text-xs"><span class="text-xl mb-1">📤</span>Compartir</button>
-            <button id="btnDownload" class="flex flex-col items-center text-green-400 font-semibold text-xs"><span class="text-xl mb-1">⬇️</span>Descargar</button>
-            <button id="btnDelete" class="flex flex-col items-center text-red-500 font-semibold text-xs"><span class="text-xl mb-1">🗑️</span>Eliminar</button>
+    <div id="imageModal" class="absolute inset-0 bg-black/95 z-[150] hide flex flex-col backdrop-blur-sm">
+        <div class="flex justify-between items-center p-5 shrink-0">
+            <div class="flex flex-col">
+                <span id="modalDate" class="text-white text-sm font-bold"></span>
+                <span id="modalTags" class="text-blue-400 text-xs"></span>
+            </div>
+            <button id="btnCloseModal" class="text-white/80 hover:text-white text-4xl font-light">&times;</button>
         </div>
-        
-        <div id="modalNote" class="bg-white p-4 text-gray-800 text-sm overflow-y-auto max-h-32 shrink-0"></div>
+        <div class="flex-1 flex justify-center items-center p-2 overflow-hidden relative">
+            <button id="btnMoveLeft" class="absolute left-2 text-white bg-black/50 p-3 rounded-full text-xl z-20 backdrop-blur-md">‹</button>
+            <img id="fullImage" class="max-w-full max-h-full object-contain rounded-sm">
+            <button id="btnMoveRight" class="absolute right-2 text-white bg-black/50 p-3 rounded-full text-xl z-20 backdrop-blur-md">›</button>
+        </div>
+        <div class="bg-[#111] border-t border-gray-800 flex justify-around p-4 shrink-0 pb-8">
+            <button id="btnShare" class="flex flex-col items-center text-gray-300 hover:text-white"><span class="text-2xl mb-1">⎋</span><span class="text-[10px] font-semibold tracking-wider">COMPARTIR</span></button>
+            <button id="btnDownload" class="flex flex-col items-center text-gray-300 hover:text-white"><span class="text-2xl mb-1">⤓</span><span class="text-[10px] font-semibold tracking-wider">GUARDAR</span></button>
+            <button id="btnDelete" class="flex flex-col items-center text-red-400 hover:text-red-500"><span class="text-2xl mb-1">⊗</span><span class="text-[10px] font-semibold tracking-wider">ELIMINAR</span></button>
+        </div>
+        <div id="modalNote" class="bg-gray-900 text-gray-300 p-4 text-sm max-h-32 overflow-y-auto border-t border-gray-800"></div>
     </div>
 
     <script src="app.js"></script>
