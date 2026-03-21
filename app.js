@@ -1,8 +1,7 @@
-// CONFIGURACIÓN: Reemplaza con tu URL
-const GAS_URL = "https://script.google.com/macros/s/AKfycbyPIv-c9UqYflEdfiX1aCoCSHnNOz0qCGcXRkH8wxaRZd-c4bHYPOh0qbfkSJ5-Oij-/exec";
+// CONFIGURACIÓN OBLIGATORIA
+const GAS_URL = "URL_DE_TU_WEB_APP_AQUI"; // Reemplaza esto con tu URL de Apps Script
 
-
-// --- INDEXEDDB V2 (SOPORTE DE BLOBS) ---
+// --- INDEXEDDB V2 (SOPORTE DE BLOBS SEGURO) ---
 const DB_NAME = 'IUBVaultDB_v2';
 const DB_VERSION = 1;
 const STORE_NAME = 'uploadQueue';
@@ -51,7 +50,7 @@ function compressFileToBlob(file) {
             const img = new Image();
             img.onload = () => {
                 const canvas = document.createElement('canvas');
-                const MAX_WIDTH = 1920; // Full HD limite
+                const MAX_WIDTH = 1920; 
                 let width = img.width; let height = img.height;
                 if (width > MAX_WIDTH) { height *= MAX_WIDTH / width; width = MAX_WIDTH; }
                 canvas.width = width; canvas.height = height;
@@ -74,9 +73,9 @@ function blobToBase64(blob) {
 }
 
 // --- ESTADO GLOBAL ---
-let sessionPin = sessionStorage.getItem('iubVaultPin') || "";
+// CORRECCIÓN CRÍTICA 1: Usar localStorage para persistencia permanente del PIN
+let sessionPin = localStorage.getItem('iubVaultPin') || "";
 let localData = { modules: [], records: [] };
-let stagingFiles = []; // Array de Blobs listos para subir
 let isProcessingQueue = false;
 let currentFolderFilter = { materia: null, tema: null };
 let currentRecordId = null;
@@ -85,9 +84,9 @@ let currentRecordId = null;
 const el = (id) => document.getElementById(id);
 const loginScreen = el('loginScreen'), pinInput = el('pinInput'), btnLogin = el('btnLogin'), loginError = el('loginError');
 const headerTitle = el('headerTitle'), btnSync = el('btnSync'), queueBadge = el('queueBadge');
-const materiaSelect = el('materiaSelect'), temaSelect = el('temaSelect'), etiquetasInput = el('etiquetasInput');
+const materiaSelect = el('materiaSelect'), temaSelect = el('temaSelect'), etiquetasInput = el('etiquetasInput'), textoNota = el('textoNota');
 const galleryInput = el('galleryInput'), cameraInput = el('cameraInput');
-const stagingArea = el('stagingArea'), stagingCount = el('stagingCount'), stagingGrid = el('stagingGrid'), textoNota = el('textoNota'), btnGuardar = el('btnGuardar'), statusMessage = el('statusMessage');
+const statusMessage = el('statusMessage');
 const estructuraGrid = el('estructuraGrid'), searchInput = el('searchInput');
 const tabCarpeta = el('tabCarpeta'), carpetaTitulo = el('carpetaTitulo'), carpetaSubtitulo = el('carpetaSubtitulo'), galeriaGrid = el('galeriaGrid'), btnVolverExplorador = el('btnVolverExplorador'), btnExportPDF = el('btnExportPDF');
 
@@ -99,6 +98,7 @@ function initApp() {
         catch (e) { localData = { modules: [], records: [] }; }
     }
     if (sessionPin) {
+        // Al arrancar con PIN guardado, valida silenciosamente e inicia la cola offline
         validarPinRequest(sessionPin, true).then(() => { updateQueueBadge(); processQueue(); });
     } else { loginScreen.classList.remove('hide'); }
 }
@@ -110,7 +110,9 @@ async function validarPinRequest(pin, isSilent = false) {
         const res = await fetch(GAS_URL, { method: 'POST', headers: { "Content-Type": "text/plain;charset=utf-8" }, body: JSON.stringify({ action: "sync", pin: pin }) });
         const result = await res.json();
         if (result.status === "success") {
-            sessionPin = pin; sessionStorage.setItem('iubVaultPin', pin);
+            sessionPin = pin; 
+            localStorage.setItem('iubVaultPin', pin); // Persistencia total
+            
             localData.modules = result.modules || []; localData.records = result.records || [];
             localStorage.setItem('iubVaultData_v2', JSON.stringify(localData));
             loginScreen.classList.add('hide'); loginError.classList.add('hide');
@@ -119,7 +121,7 @@ async function validarPinRequest(pin, isSilent = false) {
         } else throw new Error();
     } catch (e) {
         if (!isSilent) { loginError.classList.remove('hide'); pinInput.value = ""; }
-        else { sessionStorage.removeItem('iubVaultPin'); loginScreen.classList.remove('hide'); }
+        else { localStorage.removeItem('iubVaultPin'); loginScreen.classList.remove('hide'); }
     } finally { if (!isSilent) { btnLogin.textContent = "Desbloquear Workspace"; btnLogin.disabled = false; } }
 }
 
@@ -135,10 +137,9 @@ async function processQueue() {
             updateQueueBadge();
             const payload = queue[0];
             try {
-                // Convertir Blob a Base64 en el último milisegundo antes de enviar
                 if (payload.blobFile) {
                     payload.imagenBase64 = await blobToBase64(payload.blobFile);
-                    delete payload.blobFile; // Limpiar ram
+                    delete payload.blobFile;
                 }
                 const res = await fetch(GAS_URL, { method: 'POST', headers: { "Content-Type": "text/plain;charset=utf-8" }, body: JSON.stringify(payload) });
                 const result = await res.json();
@@ -152,7 +153,7 @@ async function processQueue() {
                     renderExplorador();
                     if(currentFolderFilter.tema === payload.tema) openCarpeta(payload.materia, payload.tema);
                 } else break;
-            } catch (e) { break; } // Falla de red, pausar
+            } catch (e) { break; } // Offline, pausa segura
             queue = await getQueue();
         }
     } finally { isProcessingQueue = false; updateQueueBadge(); }
@@ -177,7 +178,6 @@ function renderDropdowns() {
     const uniqueMaterias = [...new Set(localData.modules.map(m => m.materia))];
     materiaSelect.innerHTML = '<option value="">Selecciona Materia...</option>';
     uniqueMaterias.forEach(m => materiaSelect.innerHTML += `<option value="${m}">${m}</option>`);
-    
     materiaSelect.onchange = () => {
         temaSelect.innerHTML = '<option value="">Selecciona Tema...</option>';
         const temas = localData.modules.filter(mod => mod.materia === materiaSelect.value).map(mod => mod.tema);
@@ -188,8 +188,6 @@ function renderDropdowns() {
 function renderExplorador(filterText = "") {
     estructuraGrid.innerHTML = '';
     const term = filterText.toLowerCase();
-    
-    // Agrupar por Materia -> Tema
     const grouped = {};
     localData.modules.forEach(mod => {
         if (!grouped[mod.materia]) grouped[mod.materia] = [];
@@ -198,7 +196,6 @@ function renderExplorador(filterText = "") {
 
     for (const [materia, temas] of Object.entries(grouped)) {
         if(term && !materia.toLowerCase().includes(term) && !temas.some(t => t.toLowerCase().includes(term))) continue;
-        
         const matDiv = document.createElement('div');
         matDiv.className = "bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden";
         matDiv.innerHTML = `<div class="bg-gray-50 px-4 py-3 border-b border-gray-100 font-bold text-gray-800 text-sm flex items-center gap-2"><span class="text-iub text-lg">📚</span> ${materia}</div>`;
@@ -241,59 +238,49 @@ function openCarpeta(materia, tema) {
 }
 btnVolverExplorador.addEventListener('click', () => switchTab('tabExplorador', 'Explorador'));
 
-// --- MÓDULO DE CAPTURA HÍBRIDA (Archivos -> IndexedDB) ---
-async function handleFiles(files) {
-    if(!files.length) return;
-    for(let file of files) {
-        const compressedBlob = await compressFileToBlob(file);
-        stagingFiles.push(compressedBlob);
-    }
-    renderStaging();
-}
-galleryInput.addEventListener('change', (e) => handleFiles(e.target.files));
-cameraInput.addEventListener('change', (e) => handleFiles(e.target.files));
-
-function renderStaging() {
-    stagingCount.textContent = stagingFiles.length;
-    stagingGrid.innerHTML = '';
-    stagingFiles.forEach((blob, index) => {
-        const url = URL.createObjectURL(blob);
-        stagingGrid.innerHTML += `<div class="aspect-square rounded-lg overflow-hidden relative border border-gray-200 shadow-sm"><img src="${url}" class="w-full h-full object-cover"><button onclick="removeStaging(${index})" class="absolute top-1 right-1 bg-red-500 text-white w-5 h-5 rounded-full text-xs font-bold leading-none">×</button></div>`;
-    });
-    if(stagingFiles.length > 0 || textoNota.value.trim() !== "") stagingArea.classList.remove('hidden');
-    else stagingArea.classList.add('hidden');
-}
-window.removeStaging = (index) => { stagingFiles.splice(index, 1); renderStaging(); };
-textoNota.addEventListener('input', () => { if(textoNota.value.trim() !== "") stagingArea.classList.remove('hidden'); else renderStaging(); });
-
-btnGuardar.addEventListener('click', async () => {
+// --- MÓDULO DE AUTO-COMMIT (Flujo Directo) ---
+async function commitToVault(filesArray = []) {
     const mat = materiaSelect.value; const tem = temaSelect.value;
-    if(!mat || !tem) return alert("Selecciona Materia y Tema.");
+    if(!mat || !tem) { alert("⚠️ Selecciona Materia y Tema primero."); return false; }
     
-    // Guardar texto standalone si no hay imagenes
-    if(stagingFiles.length === 0 && textoNota.value.trim() !== "") {
-        await addToQueue({ action: "save", pin: sessionPin, cuatrimestre: localData.modules.find(m=>m.materia===mat).cuatrimestre, materia: mat, tema: tem, etiquetas: etiquetasInput.value, tipo: "TEXTO", textoNota: textoNota.value });
-    }
-    // Guardar imagenes
-    for(let blob of stagingFiles) {
-        await addToQueue({ action: "save", pin: sessionPin, cuatrimestre: localData.modules.find(m=>m.materia===mat).cuatrimestre, materia: mat, tema: tem, etiquetas: etiquetasInput.value, tipo: "ARCHIVO", textoNota: textoNota.value, blobFile: blob });
-    }
+    const cuatri = localData.modules.find(m => m.materia === mat).cuatrimestre;
+    const tags = etiquetasInput.value;
+    const nota = textoNota.value;
     
-    // Reset optimista
-    stagingFiles = []; textoNota.value = ""; etiquetasInput.value = ""; renderStaging();
-    statusMessage.textContent = "Guardado en local. Sincronizando..."; statusMessage.className = "text-center text-xs font-bold py-2 text-iub block"; statusMessage.classList.remove('hidden');
-    setTimeout(() => statusMessage.classList.add('hidden'), 2000);
-    updateQueueBadge(); processQueue();
-});
+    statusMessage.textContent = "⏳ Guardando en IndexedDB..."; 
+    statusMessage.classList.remove('hidden');
 
-// --- MOTOR S-PEN (INTERPOLACIÓN BÉZIER CUADRÁTICA) ---
+    // Múltiples archivos (Fotos/Galería)
+    for(let file of filesArray) {
+        const blob = await compressFileToBlob(file);
+        await addToQueue({ action: "save", pin: sessionPin, cuatrimestre: cuatri, materia: mat, tema: tem, etiquetas: tags, tipo: "ARCHIVO", textoNota: nota, blobFile: blob });
+    }
+
+    // Texto solo (si no hay archivos pero hay notas escritas, poco común en este flujo pero útil)
+    if(filesArray.length === 0 && nota.trim() !== "") {
+        await addToQueue({ action: "save", pin: sessionPin, cuatrimestre: cuatri, materia: mat, tema: tem, etiquetas: tags, tipo: "TEXTO", textoNota: nota });
+    }
+    
+    // Limpiar UI optimista
+    etiquetasInput.value = ""; textoNota.value = "";
+    statusMessage.textContent = "✅ Guardado localmente. Sincronizando...";
+    setTimeout(() => statusMessage.classList.add('hidden'), 2500);
+    
+    // Disparar background worker
+    updateQueueBadge(); processQueue();
+    return true;
+}
+
+galleryInput.addEventListener('change', (e) => { if(e.target.files.length > 0) commitToVault(Array.from(e.target.files)); });
+cameraInput.addEventListener('change', (e) => { if(e.target.files.length > 0) commitToVault(Array.from(e.target.files)); });
+
+// --- MOTOR S-PEN V2 (120HZ ALTA PRECISIÓN Y AUTO-COMMIT) ---
 const canvasOverlay = el('drawingOverlay'), canvas = el('canvasNote'), ctx = canvas.getContext('2d', { desynchronized: true });
-let isDrawing = false, points = [], currentColor = '#000000', currentBg = 'bg-white';
+let isDrawing = false, lastMid = null, currentColor = '#000000', currentBg = 'bg-white';
 
 function resizeCanvas() { canvas.width = window.innerWidth; canvas.height = window.innerHeight - 100; clearCanvasUI(); }
 function clearCanvasUI() {
     ctx.fillStyle = "white"; ctx.fillRect(0, 0, canvas.width, canvas.height);
-    // Draw background guide lines if not white
     if(currentBg === 'bg-lines') {
         ctx.strokeStyle = '#e5e7eb'; ctx.lineWidth = 1;
         for(let i=24; i<canvas.height; i+=24) { ctx.beginPath(); ctx.moveTo(0, i); ctx.lineTo(canvas.width, i); ctx.stroke(); }
@@ -304,16 +291,17 @@ function clearCanvasUI() {
     }
 }
 
-el('btnOpenNotebook').addEventListener('click', () => { resizeCanvas(); canvasOverlay.classList.remove('hide'); });
+el('btnOpenNotebook').addEventListener('click', () => { 
+    if(!materiaSelect.value || !temaSelect.value) { alert("⚠️ Selecciona Materia y Tema antes de dibujar."); return; }
+    resizeCanvas(); canvasOverlay.classList.remove('hide'); 
+});
 el('btnCerrarCanvas').addEventListener('click', () => canvasOverlay.classList.add('hide'));
 el('btnBorrarLienzo').addEventListener('click', clearCanvasUI);
 
-// Color & BG selectors
 document.querySelectorAll('.tool-color').forEach(btn => {
     btn.addEventListener('click', (e) => {
         document.querySelectorAll('.tool-color').forEach(b => b.classList.remove('ring-2', 'ring-gray-900', 'active-tool'));
-        e.target.classList.add('ring-2', 'ring-gray-900', 'active-tool');
-        currentColor = e.target.dataset.color;
+        e.target.classList.add('ring-2', 'ring-gray-900', 'active-tool'); currentColor = e.target.dataset.color;
     });
 });
 document.querySelectorAll('.tool-bg').forEach(btn => {
@@ -324,32 +312,56 @@ document.querySelectorAll('.tool-bg').forEach(btn => {
     });
 });
 
-// Pointer Events + Bézier
+// CORRECCIÓN CRÍTICA 2: API getCoalescedEvents para pantallas de 120Hz (S-Pen)
 canvas.addEventListener('pointerdown', (e) => {
-    if (e.pointerType !== 'pen' && e.pointerType !== 'mouse') return; // Palm Rejection estricto
-    isDrawing = true; points = [{ x: e.clientX, y: e.clientY - 100 }];
-    ctx.lineWidth = e.pressure ? e.pressure * 4 + 1 : 2; // Presión sensible si está disponible
+    if (e.pointerType !== 'pen' && e.pointerType !== 'mouse') return; // Palm Rejection
+    isDrawing = true; 
+    const rect = canvas.getBoundingClientRect();
+    lastMid = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+    
+    ctx.lineWidth = e.pressure ? e.pressure * 5 + 1 : 2; 
     ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.strokeStyle = currentColor;
+    
+    ctx.beginPath(); ctx.moveTo(lastMid.x, lastMid.y); ctx.lineTo(lastMid.x, lastMid.y); ctx.stroke();
 });
-canvas.addEventListener('pointermove', (e) => {
-    if (!isDrawing) return;
-    const pt = { x: e.clientX, y: e.clientY - 100 };
-    points.push(pt);
-    ctx.beginPath();
-    ctx.lineWidth = e.pressure ? e.pressure * 4 + 1 : 2;
-    if (points.length < 3) {
-        ctx.moveTo(points[0].x, points[0].y); ctx.lineTo(pt.x, pt.y); ctx.stroke(); return;
-    }
-    // Interpolación Cuadrática para trazos perfectos
-    ctx.moveTo(points[points.length - 2].x, points[points.length - 2].y);
-    const midPoint = { x: (points[points.length - 2].x + pt.x) / 2, y: (points[points.length - 2].y + pt.y) / 2 };
-    ctx.quadraticCurveTo(points[points.length - 2].x, points[points.length - 2].y, midPoint.x, midPoint.y);
-    ctx.stroke();
-});
-canvas.addEventListener('pointerup', () => { isDrawing = false; points = []; });
 
+canvas.addEventListener('pointermove', (e) => {
+    if (!isDrawing || (e.pointerType !== 'pen' && e.pointerType !== 'mouse')) return;
+    
+    // Obtener todos los micro-movimientos saltados por el navegador
+    const events = e.getCoalescedEvents ? e.getCoalescedEvents() : [e];
+    const rect = canvas.getBoundingClientRect();
+    
+    for (let ev of events) {
+        const current = { x: ev.clientX - rect.left, y: ev.clientY - rect.top };
+        const mid = { x: (lastMid.x + current.x) / 2, y: (lastMid.y + current.y) / 2 };
+        
+        ctx.lineWidth = ev.pressure ? ev.pressure * 5 + 1 : 2;
+        ctx.beginPath();
+        ctx.moveTo(lastMid.x, lastMid.y);
+        ctx.quadraticCurveTo(lastMid.x, lastMid.y, mid.x, mid.y); // Curva suave
+        ctx.stroke();
+        
+        lastMid = current;
+    }
+});
+canvas.addEventListener('pointerup', (e) => { if (e.pointerType === 'pen' || e.pointerType === 'mouse') isDrawing = false; });
+
+// Auto-Commit desde Canvas
 el('btnGuardarCanvas').addEventListener('click', () => {
-    canvas.toBlob((blob) => { stagingFiles.push(blob); renderStaging(); canvasOverlay.classList.add('hide'); }, 'image/jpeg', 0.9);
+    canvas.toBlob(async (blob) => { 
+        canvasOverlay.classList.add('hide');
+        const mat = materiaSelect.value; const tem = temaSelect.value;
+        const cuatri = localData.modules.find(m => m.materia === mat).cuatrimestre;
+        
+        statusMessage.textContent = "⏳ Guardando apunte..."; statusMessage.classList.remove('hidden');
+        await addToQueue({ action: "save", pin: sessionPin, cuatrimestre: cuatri, materia: mat, tema: tem, etiquetas: etiquetasInput.value, tipo: "NOTA_SPEN", textoNota: textoNota.value, blobFile: blob });
+        
+        etiquetasInput.value = ""; textoNota.value = "";
+        statusMessage.textContent = "✅ Apunte guardado localmente.";
+        setTimeout(() => statusMessage.classList.add('hidden'), 2500);
+        updateQueueBadge(); processQueue();
+    }, 'image/jpeg', 0.9);
 });
 
 // --- CRUD & VISOR ---
@@ -410,18 +422,16 @@ el('btnAgregarEstructura').addEventListener('click', async () => {
         }
     } catch(e) {} finally { el('btnAgregarEstructura').disabled = false; }
 });
-el('btnLimpiarCache').addEventListener('click', () => { localStorage.clear(); sessionStorage.clear(); location.reload(); });
+el('btnLimpiarCache').addEventListener('click', () => { localStorage.clear(); location.reload(); });
 
 // --- EXPORTACIÓN PDF PROFESIONAL (JSPDF) ---
 btnExportPDF.addEventListener('click', async () => {
     if(!currentFolderFilter.tema) return;
-    const { jsPDF } = window.jspdf;
-    const doc = new jsPDF('p', 'mm', 'a4');
+    const { jsPDF } = window.jspdf; const doc = new jsPDF('p', 'mm', 'a4');
     const records = localData.records.filter(r => r.materia === currentFolderFilter.materia && r.tema === currentFolderFilter.tema && r.url);
+    if(records.length === 0) return alert("No hay imágenes para exportar.");
     
-    if(records.length === 0) return alert("No hay imágenes para exportar en esta carpeta.");
     btnExportPDF.textContent = "Generando...";
-    
     doc.setFontSize(22); doc.text(currentFolderFilter.materia, 10, 20);
     doc.setFontSize(14); doc.text(`Tema: ${currentFolderFilter.tema}`, 10, 30);
     doc.setFontSize(10); doc.text(`Generado: ${new Date().toLocaleDateString()}`, 10, 40);
@@ -430,14 +440,11 @@ btnExportPDF.addEventListener('click', async () => {
     for(let i = 0; i < records.length; i++) {
         if (i > 0) { doc.addPage(); yPos = 20; }
         try {
-            // Cargar imagen en canvas para extraer data URI limpio
             const img = new Image(); img.crossOrigin = "Anonymous"; img.src = records[i].url;
             await new Promise((resolve) => { img.onload = resolve; img.onerror = resolve; });
             const canvas = document.createElement('canvas'); canvas.width = img.width; canvas.height = img.height;
             canvas.getContext('2d').drawImage(img, 0, 0);
             const dataUri = canvas.toDataURL('image/jpeg', 0.8);
-            
-            // Ajustar al A4 (210x297mm) manteniendo proporción
             const imgProps = doc.getImageProperties(dataUri);
             const pdfWidth = doc.internal.pageSize.getWidth() - 20;
             const pdfHeight = (imgProps.height * pdfWidth) / imgProps.width;
