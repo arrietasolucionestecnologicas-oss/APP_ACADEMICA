@@ -111,18 +111,31 @@ async function validarPinRequest(pin, isSilent = false) {
         const result = await res.json();
         if (result.status === "success") {
             sessionPin = pin; 
-            localStorage.setItem('iubVaultPin', pin); // Persistencia total
+            localStorage.setItem('iubVaultPin', pin);
             
+            // Verificación de integridad: Evitar crash si el backend es V1
+            if (result.modules && result.modules.length > 0 && typeof result.modules[0] === 'string') {
+                throw new Error("Backend V1 detectado. Publica una 'Nueva Implementación' en Apps Script.");
+            }
+
             localData.modules = result.modules || []; localData.records = result.records || [];
             localStorage.setItem('iubVaultData_v2', JSON.stringify(localData));
             loginScreen.classList.add('hide'); loginError.classList.add('hide');
             renderDropdowns(); renderExplorador();
             if (currentFolderFilter.tema) openCarpeta(currentFolderFilter.materia, currentFolderFilter.tema);
-        } else throw new Error();
+        } else throw new Error(result.message || "Error desconocido en el servidor.");
     } catch (e) {
-        if (!isSilent) { loginError.classList.remove('hide'); pinInput.value = ""; }
-        else { localStorage.removeItem('iubVaultPin'); loginScreen.classList.remove('hide'); }
-    } finally { if (!isSilent) { btnLogin.textContent = "Desbloquear Workspace"; btnLogin.disabled = false; } }
+        if (!isSilent) { 
+            loginError.textContent = e.message === "Failed to fetch" ? "Error de red o URL incorrecta." : e.message; 
+            loginError.classList.remove('hide'); 
+            pinInput.value = ""; 
+        } else { 
+            localStorage.removeItem('iubVaultPin'); 
+            loginScreen.classList.remove('hide'); 
+        }
+    } finally { 
+        if (!isSilent) { btnLogin.textContent = "Desbloquear Workspace"; btnLogin.disabled = false; } 
+    }
 }
 
 btnLogin.addEventListener('click', () => { if (pinInput.value.length >= 4) validarPinRequest(pinInput.value.trim()); });
