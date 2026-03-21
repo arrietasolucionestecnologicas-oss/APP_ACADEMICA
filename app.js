@@ -1,5 +1,5 @@
 // CONFIGURACIÓN OBLIGATORIA
-const GAS_URL = "URL_DE_TU_WEB_APP_AQUI"; // Reemplaza esto con tu URL de Apps Script
+const GAS_URL = "https://script.google.com/macros/s/AKfycbyPIv-c9UqYflEdfiX1aCoCSHnNOz0qCGcXRkH8wxaRZd-c4bHYPOh0qbfkSJ5-Oij-/exec"; // Reemplaza esto con tu URL de Apps Script
 
 // --- INDEXEDDB V2 (SOPORTE DE BLOBS SEGURO) ---
 const DB_NAME = 'IUBVaultDB_v2';
