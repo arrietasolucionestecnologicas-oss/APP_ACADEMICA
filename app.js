@@ -1,5 +1,6 @@
 // CONFIGURACIÓN OBLIGATORIA
 const GAS_URL = "https://script.google.com/macros/s/AKfycbyPIv-c9UqYflEdfiX1aCoCSHnNOz0qCGcXRkH8wxaRZd-c4bHYPOh0qbfkSJ5-Oij-/exec";
+const APP_VERSION = "2026.09.27-1"; // se muestra en Ajustes para confirmar qué versión cargó tu celular
 
 // --- INDEXEDDB V2 (SOPORTE DE BLOBS SEGURO) ---
 const DB_NAME = 'IUBVaultDB_v2';
@@ -157,10 +158,41 @@ function initApp() {
         loginScreen.classList.remove('hide');
     }
 
+    const versionTag = el('appVersionTag');
+    if (versionTag) versionTag.textContent = 'Versión ' + APP_VERSION;
+
     if ('serviceWorker' in navigator) {
-        navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).catch(() => {});
+        navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then((reg) => {
+            // Revisa de inmediato si hay una versión nueva (no espera al chequeo periódico del navegador).
+            reg.update().catch(() => {});
+            reg.addEventListener('updatefound', () => {
+                const newWorker = reg.installing;
+                if (!newWorker) return;
+                newWorker.addEventListener('statechange', () => {
+                    if (newWorker.state === 'activated') {
+                        showBanner("✅ Nueva versión instalada. Actualizando...", "ok", true);
+                        setTimeout(() => location.reload(), 1200);
+                    }
+                });
+            });
+        }).catch(() => {});
     }
 }
+
+// Botón de emergencia: borra Service Worker + cachés y recarga desde cero.
+el('btnForceUpdate').addEventListener('click', async () => {
+    try {
+        if ('serviceWorker' in navigator) {
+            const regs = await navigator.serviceWorker.getRegistrations();
+            for (const r of regs) await r.unregister();
+        }
+        if ('caches' in window) {
+            const keys = await caches.keys();
+            for (const k of keys) await caches.delete(k);
+        }
+    } catch (e) {}
+    location.reload();
+});
 
 // --- INSTALAR COMO APP (banner propio, no depende del aviso automático de Chrome) ---
 let deferredInstallPrompt = null;
