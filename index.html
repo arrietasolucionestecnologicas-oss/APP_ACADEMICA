@@ -2,8 +2,8 @@
 <html lang="es">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>IUB Vault v2.1</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <title>IUB Vault v3</title>
     <link rel="manifest" href="manifest.json">
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
@@ -12,17 +12,23 @@
         body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background-color: #F9FAFB; overscroll-behavior-y: none; }
         .bg-iub { background-color: var(--iub-blue); }
         .text-iub { color: var(--iub-blue); }
-        
+
         /* Patrones de Cuaderno */
         .bg-lines { background-image: linear-gradient(#e5e7eb 1px, transparent 1px); background-size: 100% 1.5rem; }
         .bg-grid { background-image: linear-gradient(#e5e7eb 1px, transparent 1px), linear-gradient(90deg, #e5e7eb 1px, transparent 1px); background-size: 1.5rem 1.5rem; }
-        
-        .glass-nav { background: rgba(255, 255, 255, 0.9); backdrop-filter: blur(10px); border-top: 1px solid #e5e7eb; }
+
+        .glass-nav { background: rgba(255, 255, 255, 0.9); backdrop-filter: blur(10px); border-top: 1px solid #e5e7eb; padding-bottom: max(0.5rem, env(safe-area-inset-bottom)); }
+        .safe-bottom { padding-bottom: max(0.75rem, env(safe-area-inset-bottom)); }
         .hide { display: none !important; }
         .tab-content { display: none; animation: fadeIn 0.3s ease-in-out; }
         .tab-content.active { display: block; }
         @keyframes fadeIn { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
-        
+
+        .chip { white-space: nowrap; padding: 0.4rem 0.9rem; border-radius: 999px; font-size: 0.75rem; font-weight: 700; border: 1px solid #e5e7eb; background: white; color: #6b7280; }
+        .chip.active { background: var(--iub-blue); color: white; border-color: var(--iub-blue); }
+        .chip-row { display: flex; gap: 0.5rem; overflow-x: auto; -ms-overflow-style: none; scrollbar-width: none; }
+        .chip-row::-webkit-scrollbar { display: none; }
+
         #drawingOverlay { position: fixed; inset: 0; z-index: 100; background: white; display: flex; flex-direction: column; }
         #canvasNote { flex: 1; touch-action: none; cursor: crosshair; }
     </style>
@@ -31,7 +37,7 @@
 
     <div id="loginScreen" class="absolute inset-0 bg-white z-[200] flex flex-col justify-center items-center p-6">
         <div class="w-20 h-20 bg-iub rounded-2xl flex items-center justify-center mb-6 shadow-lg">
-            <span class="text-white text-3xl font-bold">V2</span>
+            <span class="text-white text-3xl font-bold">V3</span>
         </div>
         <h1 class="text-2xl font-bold text-gray-900 mb-1">IUB Vault</h1>
         <p class="text-gray-500 mb-8 text-sm">Workspace Académico</p>
@@ -40,88 +46,42 @@
         <p id="loginError" class="text-red-500 mt-4 text-sm font-medium hide">Credenciales inválidas o error de red.</p>
     </div>
 
-    <header class="bg-white px-5 py-4 flex justify-between items-center shrink-0 border-b border-gray-100 shadow-sm z-10">
-        <h1 id="headerTitle" class="text-xl font-bold text-gray-800 tracking-tight">Captura Inmediata</h1>
-        <button id="btnSync" class="text-xs bg-gray-100 text-gray-600 px-3 py-1.5 rounded-full font-medium flex items-center gap-2 hover:bg-gray-200 transition-colors">
-            <span id="syncIcon">↻</span> Sync <span id="queueBadge" class="hidden bg-iub text-white px-1.5 py-0.5 rounded-full text-[10px] shadow-sm">0</span>
+    <header class="bg-white px-4 py-3 flex justify-between items-center shrink-0 border-b border-gray-100 shadow-sm z-10 gap-2">
+        <button id="btnBackToInicio" class="hide text-gray-500 text-2xl leading-none px-1">‹</button>
+        <h1 id="headerTitle" class="text-lg font-bold text-gray-800 tracking-tight truncate flex-1">IUB Vault</h1>
+        <button id="btnExportPDF" class="hide text-xs bg-gray-100 text-gray-700 px-2.5 py-1.5 rounded-full font-medium">📑</button>
+        <button id="btnSync" class="text-xs bg-gray-100 text-gray-600 px-3 py-1.5 rounded-full font-medium flex items-center gap-2 hover:bg-gray-200 transition-colors shrink-0">
+            <span id="syncIcon">↻</span> <span id="queueBadge" class="hidden bg-iub text-white px-1.5 py-0.5 rounded-full text-[10px] shadow-sm">0</span>
         </button>
     </header>
     <div id="connBanner" class="hide text-center text-[11px] font-semibold py-1.5 shrink-0"></div>
 
     <main class="flex-1 overflow-y-auto bg-[#F9FAFB] relative z-0" id="mainContainer">
-        
-        <div id="tabCaptura" class="tab-content active p-4 max-w-xl mx-auto space-y-5">
-            
-            <div class="bg-white p-5 rounded-2xl shadow-sm border border-gray-100 space-y-4">
-                <div class="grid grid-cols-2 gap-3">
-                    <div>
-                        <label class="block text-xs font-semibold text-gray-500 mb-1.5 uppercase tracking-wider">Materia</label>
-                        <select id="materiaSelect" class="w-full p-2.5 bg-gray-50 border border-gray-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-500"></select>
-                    </div>
-                    <div>
-                        <label class="block text-xs font-semibold text-gray-500 mb-1.5 uppercase tracking-wider">Tema / Carpeta</label>
-                        <select id="temaSelect" class="w-full p-2.5 bg-gray-50 border border-gray-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-500"></select>
-                    </div>
-                </div>
-                <div>
-                    <label class="block text-xs font-semibold text-gray-500 mb-1.5 uppercase tracking-wider">Etiquetas (Opcional)</label>
-                    <input type="text" id="etiquetasInput" placeholder="Ej: Parcial, Taller, Fórmula..." class="w-full p-2.5 bg-gray-50 border border-gray-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-500">
-                </div>
-                <div>
-                    <label class="block text-xs font-semibold text-gray-500 mb-1.5 uppercase tracking-wider">Contexto de la nota</label>
-                    <textarea id="textoNota" rows="2" class="w-full p-2.5 bg-gray-50 border border-gray-200 rounded-lg text-sm outline-none resize-none focus:ring-2 focus:ring-blue-100 focus:border-blue-500" placeholder="Escribe un contexto general que se adjuntará a la captura..."></textarea>
-                </div>
-            </div>
 
-            <div class="grid grid-cols-2 gap-3">
-                <button onclick="document.getElementById('galleryInput').click()" class="bg-white border border-gray-200 p-4 rounded-2xl flex flex-col items-center justify-center gap-2 shadow-sm hover:bg-gray-50 active:scale-95 transition-all">
-                    <span class="text-3xl">🖼️</span>
-                    <span class="text-sm font-semibold text-gray-700 text-center">Auto-Guardar<br>de Galería</span>
-                </button>
-                <input type="file" id="galleryInput" accept="image/*" multiple class="hidden">
-                
-                <button onclick="document.getElementById('cameraInput').click()" class="bg-iub text-white border border-blue-900 p-4 rounded-2xl flex flex-col items-center justify-center gap-2 shadow-md hover:bg-blue-800 active:scale-95 transition-all">
-                    <span class="text-3xl">📸</span>
-                    <span class="text-sm font-semibold text-center">Tomar Foto<br>& Guardar</span>
-                </button>
-                <input type="file" id="cameraInput" accept="image/*" capture="environment" class="hidden">
-            </div>
-
-            <button id="btnOpenNotebook" class="w-full bg-gray-900 text-white p-4 rounded-2xl flex items-center justify-center gap-3 shadow-md active:scale-95 transition-all">
-                <span class="text-xl">✍️</span>
-                <span class="font-semibold">Abrir Cuaderno S-Pen</span>
-            </button>
-
-            <div id="statusMessage" class="text-center text-sm font-bold hidden py-2 text-green-600 bg-green-50 rounded-lg border border-green-200"></div>
+        <!-- INICIO: cuatrimestre -> materias (como el estante de cuadernos) -->
+        <div id="tabInicio" class="tab-content active p-4 max-w-xl mx-auto space-y-4">
+            <input type="text" id="searchInput" placeholder="Buscar materia, tema o etiqueta..." class="w-full p-3 bg-white border border-gray-200 rounded-xl shadow-sm outline-none focus:ring-2 focus:ring-blue-100 text-sm">
+            <div id="cuatriChips" class="chip-row"></div>
+            <div id="materiaGrid" class="grid grid-cols-2 gap-3"></div>
+            <div id="searchResults" class="hide space-y-3"></div>
         </div>
 
-        <div id="tabExplorador" class="tab-content p-4 max-w-xl mx-auto">
-            <div class="mb-4">
-                <input type="text" id="searchInput" placeholder="Buscar materia, tema o etiqueta..." class="w-full p-3 bg-white border border-gray-200 rounded-xl shadow-sm outline-none focus:ring-2 focus:ring-blue-100 text-sm">
+        <!-- MATERIA: cuaderno vivo de una materia (temas + captura + historial, todo junto) -->
+        <div id="tabMateria" class="tab-content bg-[#F9FAFB] min-h-full">
+            <div class="sticky top-0 bg-white/95 backdrop-blur-md border-b border-gray-100 z-10 p-3 space-y-2">
+                <div id="temaChips" class="chip-row"></div>
             </div>
-            <div id="estructuraGrid" class="space-y-3"></div>
-        </div>
-
-        <div id="tabCarpeta" class="tab-content bg-white min-h-full">
-            <div class="sticky top-0 bg-white/90 backdrop-blur-md p-4 flex justify-between items-center border-b border-gray-100 z-10">
-                <button id="btnVolverExplorador" class="text-gray-600 font-medium flex items-center gap-1"><span class="text-xl">‹</span> Volver</button>
-                <button id="btnExportPDF" class="bg-gray-100 text-gray-800 text-xs font-bold px-3 py-1.5 rounded-lg flex items-center gap-1 shadow-sm">📑 Generar PDF</button>
-            </div>
-            <div class="p-4">
-                <h2 id="carpetaTitulo" class="text-2xl font-bold text-gray-900 mb-1">Tema</h2>
-                <p id="carpetaSubtitulo" class="text-sm text-gray-500 mb-6">Materia</p>
-                <div id="galeriaGrid" class="grid grid-cols-2 gap-3 pb-20"></div>
-            </div>
+            <div id="notebookFeed" class="p-4 grid grid-cols-2 gap-3" style="padding-bottom: 180px;"></div>
         </div>
 
         <div id="tabAjustes" class="tab-content p-4 max-w-xl mx-auto space-y-6">
             <div class="bg-white p-5 rounded-2xl shadow-sm border border-gray-100">
-                <h2 class="text-sm font-bold text-gray-800 uppercase tracking-wider mb-4">Nueva Estructura</h2>
+                <h2 class="text-sm font-bold text-gray-800 uppercase tracking-wider mb-4">Nueva Materia / Tema</h2>
                 <div class="space-y-4">
                     <input type="number" id="nuevoCuatrimestre" placeholder="Cuatrimestre (Ej: 8)" class="w-full p-3 bg-gray-50 border border-gray-200 rounded-xl text-sm outline-none">
                     <input type="text" id="nuevaMateria" placeholder="Nombre Materia" class="w-full p-3 bg-gray-50 border border-gray-200 rounded-xl text-sm outline-none">
                     <input type="text" id="nuevoTema" placeholder="Tema/Carpeta (Ej: Corte 1)" class="w-full p-3 bg-gray-50 border border-gray-200 rounded-xl text-sm outline-none">
-                    <button id="btnAgregarEstructura" class="w-full bg-gray-900 text-white font-bold py-3 rounded-xl shadow active:scale-95 transition-transform">Crear Carpeta</button>
+                    <button id="btnAgregarEstructura" class="w-full bg-gray-900 text-white font-bold py-3 rounded-xl shadow active:scale-95 transition-transform">Crear</button>
                     <div id="ajustesStatus" class="text-center text-sm font-semibold hidden"></div>
                 </div>
             </div>
@@ -130,14 +90,39 @@
 
     </main>
 
-    <nav class="glass-nav flex justify-around p-2 pb-6 z-10 shrink-0">
-        <button onclick="switchTab('tabCaptura', 'Captura Inmediata', this)" class="flex flex-col items-center w-1/3 text-gray-400 hover:text-gray-900 nav-btn active-nav transition-colors">
-            <span class="text-2xl mb-1">⊕</span><span class="text-[10px] font-bold tracking-wide">CREAR</span>
+    <!-- Barra de captura fija dentro del cuaderno de una materia -->
+    <div id="composerStrip" class="hide fixed left-0 right-0 bottom-[76px] px-3 z-20">
+        <div class="bg-gray-900 rounded-2xl shadow-lg p-2 flex gap-2 items-center">
+            <input type="text" id="composerInput" placeholder="Comentario para esta captura (opcional)..." class="flex-1 bg-gray-800 text-white text-sm rounded-full px-4 py-2.5 outline-none placeholder-gray-500">
+            <button id="btnComposerSend" class="bg-blue-600 text-white text-sm font-semibold px-4 py-2.5 rounded-full shrink-0">Enviar</button>
+            <button id="btnComposerDismiss" class="text-gray-400 px-2 text-lg shrink-0">✕</button>
+        </div>
+    </div>
+
+    <div id="captureBar" class="hide fixed left-0 right-0 bottom-0 z-10 bg-white border-t border-gray-100 shadow-[0_-4px_12px_rgba(0,0,0,0.05)] safe-bottom">
+        <div class="grid grid-cols-4 gap-2 p-3 max-w-xl mx-auto">
+            <button onclick="document.getElementById('cameraInput').click()" class="bg-iub text-white rounded-xl py-3 flex flex-col items-center gap-1 active:scale-95 transition-transform">
+                <span class="text-xl">📸</span><span class="text-[10px] font-bold">FOTO</span>
+            </button>
+            <button onclick="document.getElementById('galleryInput').click()" class="bg-gray-100 text-gray-700 rounded-xl py-3 flex flex-col items-center gap-1 active:scale-95 transition-transform">
+                <span class="text-xl">🖼️</span><span class="text-[10px] font-bold">GALERÍA</span>
+            </button>
+            <button id="btnOpenNotebook" class="bg-gray-100 text-gray-700 rounded-xl py-3 flex flex-col items-center gap-1 active:scale-95 transition-transform">
+                <span class="text-xl">✍️</span><span class="text-[10px] font-bold">S-PEN</span>
+            </button>
+            <button id="btnQuickText" class="bg-gray-100 text-gray-700 rounded-xl py-3 flex flex-col items-center gap-1 active:scale-95 transition-transform">
+                <span class="text-xl">Aa</span><span class="text-[10px] font-bold">TEXTO</span>
+            </button>
+        </div>
+        <input type="file" id="galleryInput" accept="image/*" multiple class="hidden">
+        <input type="file" id="cameraInput" accept="image/*" capture="environment" class="hidden">
+    </div>
+
+    <nav id="bottomNav" class="glass-nav flex justify-around p-2 z-10 shrink-0">
+        <button onclick="switchTab('tabInicio', 'IUB Vault', this)" class="flex flex-col items-center w-1/2 text-gray-900 active-nav hover:text-gray-900 nav-btn transition-colors">
+            <span class="text-2xl mb-1">📚</span><span class="text-[10px] font-bold tracking-wide">MIS CUADERNOS</span>
         </button>
-        <button onclick="switchTab('tabExplorador', 'Explorador', this)" class="flex flex-col items-center w-1/3 text-gray-400 hover:text-gray-900 nav-btn transition-colors">
-            <span class="text-2xl mb-1">⊞</span><span class="text-[10px] font-bold tracking-wide">VAULT</span>
-        </button>
-        <button onclick="switchTab('tabAjustes', 'Configuración', this)" class="flex flex-col items-center w-1/3 text-gray-400 hover:text-gray-900 nav-btn transition-colors">
+        <button onclick="switchTab('tabAjustes', 'Configuración', this)" class="flex flex-col items-center w-1/2 text-gray-400 hover:text-gray-900 nav-btn transition-colors">
             <span class="text-2xl mb-1">⚙</span><span class="text-[10px] font-bold tracking-wide">AJUSTES</span>
         </button>
     </nav>

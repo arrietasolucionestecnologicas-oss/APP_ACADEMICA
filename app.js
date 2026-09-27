@@ -42,7 +42,7 @@ async function removeFromQueue(tempId) {
     });
 }
 
-// --- UTILIDADES DE COMPRESIÓN (EDGE COMPUTING) ---
+// --- UTILIDADES ---
 function compressFileToBlob(file) {
     return new Promise((resolve) => {
         const reader = new FileReader();
@@ -72,7 +72,6 @@ function blobToBase64(blob) {
     });
 }
 
-// --- SEGURIDAD: ESCAPE DE HTML (evita inyección al renderizar datos) ---
 function esc(str) {
     if (str === null || str === undefined) return "";
     return String(str)
@@ -83,13 +82,27 @@ function esc(str) {
         .replace(/'/g, "&#39;");
 }
 
+function localNow() {
+    const d = new Date();
+    const pad = (n) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+function makeId() {
+    if (window.crypto && crypto.randomUUID) return crypto.randomUUID();
+    return 'id_' + Date.now().toString() + Math.random().toString(36).substr(2, 9);
+}
+
 // --- ESTADO GLOBAL ---
 let sessionPin = localStorage.getItem('iubVaultPin') || "";
 let localData = { modules: [], records: [] };
 let isProcessingQueue = false;
-let currentFolderFilter = { materia: null, tema: null };
+let currentContext = { cuatrimestre: null, materia: null, tema: null };
+let selectedCuatri = null;
 let currentRecordId = null;
 let modalContext = { list: [], index: -1 };
+let composerMode = null; // 'comment' | 'text'
+let composerRecordId = null;
 
 function saveLocalData() {
     try {
@@ -104,11 +117,12 @@ const el = (id) => document.getElementById(id);
 const loginScreen = el('loginScreen'), pinInput = el('pinInput'), btnLogin = el('btnLogin'), loginError = el('loginError');
 const headerTitle = el('headerTitle'), btnSync = el('btnSync'), queueBadge = el('queueBadge'), syncIcon = el('syncIcon');
 const connBanner = el('connBanner');
-const materiaSelect = el('materiaSelect'), temaSelect = el('temaSelect'), etiquetasInput = el('etiquetasInput'), textoNota = el('textoNota');
+const btnBackToInicio = el('btnBackToInicio'), btnExportPDF = el('btnExportPDF');
+const searchInput = el('searchInput'), cuatriChips = el('cuatriChips'), materiaGrid = el('materiaGrid'), searchResults = el('searchResults');
+const temaChips = el('temaChips'), notebookFeed = el('notebookFeed');
+const captureBar = el('captureBar'), bottomNav = el('bottomNav');
+const composerStrip = el('composerStrip'), composerInput = el('composerInput'), btnComposerSend = el('btnComposerSend'), btnComposerDismiss = el('btnComposerDismiss');
 const galleryInput = el('galleryInput'), cameraInput = el('cameraInput');
-const statusMessage = el('statusMessage');
-const estructuraGrid = el('estructuraGrid'), searchInput = el('searchInput');
-const tabCarpeta = el('tabCarpeta'), carpetaTitulo = el('carpetaTitulo'), carpetaSubtitulo = el('carpetaSubtitulo'), galeriaGrid = el('galeriaGrid'), btnVolverExplorador = el('btnVolverExplorador'), btnExportPDF = el('btnExportPDF');
 
 // --- BANNER DE ESTADO (conexión / sync) ---
 let bannerTimeout = null;
@@ -129,7 +143,7 @@ window.addEventListener('online', () => { hideBanner(); if (sessionPin) { proces
 function initApp() {
     const cached = localStorage.getItem('iubVaultData_v2');
     if (cached) {
-        try { localData = JSON.parse(cached); renderDropdowns(); renderExplorador(); }
+        try { localData = JSON.parse(cached); renderInicio(); }
         catch (e) { localData = { modules: [], records: [] }; }
     }
     if (!navigator.onLine) showBanner("📡 Sin conexión. Mostrando datos guardados.", "warn", true);
@@ -162,14 +176,12 @@ async function validarPinRequest(pin, isSilent = false) {
                 throw new Error("Backend V1 detectado. Publica una 'Nueva Implementación' en Apps Script.");
             }
 
-            localData.modules = result.modules || []; localData.records = result.records || [];
-            saveLocalData();
+            mergeServerData(result.modules || [], result.records || []);
             loginScreen.classList.add('hide'); loginError.classList.add('hide');
-            renderDropdowns(); renderExplorador();
-            if (currentFolderFilter.tema) openCarpeta(currentFolderFilter.materia, currentFolderFilter.tema);
+            renderInicio();
+            if (currentContext.tema) renderNotebookFeed();
             hideBanner();
         } else if (result.code === "INVALID_PIN") {
-            // PIN realmente incorrecto: sí cerramos sesión.
             if (!isSilent) {
                 loginError.textContent = "PIN incorrecto.";
                 loginError.classList.remove('hide');
@@ -180,13 +192,11 @@ async function validarPinRequest(pin, isSilent = false) {
                 loginScreen.classList.remove('hide');
             }
         } else {
-            // Error del servidor (bloqueo temporal, cuota, etc.): NO cerramos sesión, solo avisamos.
             const msg = result.message || "Error del servidor.";
             if (!isSilent) { loginError.textContent = msg; loginError.classList.remove('hide'); }
             else { showBanner("⚠️ " + msg, "warn"); }
         }
     } catch (e) {
-        // Fallo de red/parseo: nunca cerramos sesión por esto.
         if (!isSilent) {
             loginError.textContent = "Error de red o URL incorrecta.";
             loginError.classList.remove('hide');
@@ -196,6 +206,15 @@ async function validarPinRequest(pin, isSilent = false) {
     } finally {
         if (!isSilent) { btnLogin.textContent = "Desbloquear Workspace"; btnLogin.disabled = false; }
     }
+}
+
+// Combina lo que llega del servidor con capturas locales que aún no terminan de sincronizar (_pending).
+function mergeServerData(modules, records) {
+    const pendingLocal = localData.records.filter(r => r._pending);
+    localData.modules = modules;
+    const serverIds = new Set(records.map(r => r.id));
+    localData.records = records.concat(pendingLocal.filter(r => !serverIds.has(r.id)));
+    saveLocalData();
 }
 
 btnLogin.addEventListener('click', () => { if (pinInput.value.length >= 4) validarPinRequest(pinInput.value.trim()); });
@@ -241,14 +260,22 @@ async function processQueue() {
 
 function applyQueueSuccess(payload, result) {
     if (payload.action === "save") {
-        localData.records.unshift({
-            id: result.id, fecha: result.fecha, cuatrimestre: payload.cuatrimestre, materia: payload.materia,
-            tema: payload.tema, etiquetas: payload.etiquetas, tipo: payload.tipo, url: result.url,
-            fileId: result.fileId || "", nota: payload.textoNota, comentarios: []
-        });
+        let rec = localData.records.find(r => r.id === payload.idRegistro);
+        if (rec) {
+            if (result.url) rec.url = result.url;
+            if (result.fileId) rec.fileId = result.fileId;
+            if (result.fecha) rec.fecha = result.fecha;
+            delete rec._pending;
+        } else {
+            localData.records.unshift({
+                id: result.id, fecha: result.fecha, cuatrimestre: payload.cuatrimestre, materia: payload.materia,
+                tema: payload.tema, etiquetas: payload.etiquetas, tipo: payload.tipo, url: result.url,
+                fileId: result.fileId || "", nota: payload.textoNota, comentarios: []
+            });
+        }
         saveLocalData();
-        renderExplorador();
-        if (currentFolderFilter.tema === payload.tema && currentFolderFilter.materia === payload.materia) openCarpeta(payload.materia, payload.tema);
+        renderNotebookFeedIfActive();
+        renderInicio();
     } else if (payload.action === "add_comment") {
         const rec = localData.records.find(r => r.id === payload.idRegistro);
         if (rec) {
@@ -258,10 +285,10 @@ function applyQueueSuccess(payload, result) {
             if (!already) rec.comentarios.push({ id: result.id, fecha: result.fecha, texto: result.texto });
             saveLocalData();
             if (currentRecordId === rec.id) renderModalComments(rec);
+            renderNotebookFeedIfActive();
         }
-    } else if (payload.action === "delete") {
-        // Ya se removió de forma optimista al hacer clic en eliminar.
     }
+    // "delete" y "delete_comment" ya se reflejaron de forma optimista al momento del clic.
 }
 
 async function updateQueueBadge() {
@@ -270,61 +297,151 @@ async function updateQueueBadge() {
     else queueBadge.classList.add('hidden');
 }
 
-// --- RENDERIZADO UI ---
+// --- NAVEGACIÓN: INICIO (cuatrimestre -> materias) ---
 function switchTab(tabId, title, btnEl) {
     document.querySelectorAll('.tab-content').forEach(e => e.classList.remove('active'));
-    el(tabId).classList.add('active'); headerTitle.textContent = title;
+    el(tabId).classList.add('active');
+    headerTitle.textContent = title;
+    btnBackToInicio.classList.add('hide');
+    btnExportPDF.classList.add('hide');
+    captureBar.classList.add('hide');
+    closeComposer();
+    bottomNav.classList.remove('hide');
     document.querySelectorAll('.nav-btn').forEach(btn => { btn.classList.remove('text-gray-900', 'active-nav'); btn.classList.add('text-gray-400'); });
     if (btnEl) { btnEl.classList.remove('text-gray-400'); btnEl.classList.add('text-gray-900', 'active-nav'); }
-    currentFolderFilter = { materia: null, tema: null };
+    currentContext = { cuatrimestre: null, materia: null, tema: null };
+    if (tabId === 'tabInicio') { searchInput.value = ""; renderInicio(); }
 }
+btnBackToInicio.addEventListener('click', () => switchTab('tabInicio', 'IUB Vault', document.querySelector('.nav-btn')));
 
-function renderDropdowns() {
-    const uniqueMaterias = [...new Set(localData.modules.map(m => m.materia))];
-    materiaSelect.innerHTML = '<option value="">Selecciona Materia...</option>';
-    uniqueMaterias.forEach(m => materiaSelect.innerHTML += `<option value="${esc(m)}">${esc(m)}</option>`);
-    materiaSelect.onchange = () => {
-        temaSelect.innerHTML = '<option value="">Selecciona Tema...</option>';
-        const temas = localData.modules.filter(mod => mod.materia === materiaSelect.value).map(mod => mod.tema);
-        temas.forEach(t => temaSelect.innerHTML += `<option value="${esc(t)}">${esc(t)}</option>`);
-    };
-}
+function renderInicio() {
+    const term = searchInput.value.toLowerCase().trim();
+    if (term) {
+        cuatriChips.classList.add('hide'); materiaGrid.classList.add('hide');
+        searchResults.classList.remove('hide');
+        renderSearchResults(term);
+        return;
+    }
+    cuatriChips.classList.remove('hide'); materiaGrid.classList.remove('hide'); searchResults.classList.add('hide');
 
-function renderExplorador(filterText = "") {
-    estructuraGrid.innerHTML = '';
-    const term = filterText.toLowerCase();
-    const grouped = {};
-    localData.modules.forEach(mod => {
-        if (!grouped[mod.materia]) grouped[mod.materia] = [];
-        grouped[mod.materia].push(mod.tema);
+    const cuatris = [...new Set(localData.modules.map(m => m.cuatrimestre))]
+        .sort((a, b) => String(b).localeCompare(String(a), undefined, { numeric: true }));
+
+    if (!selectedCuatri || !cuatris.includes(selectedCuatri)) selectedCuatri = cuatris[0];
+
+    cuatriChips.innerHTML = '';
+    cuatris.forEach(c => {
+        const chip = document.createElement('button');
+        chip.className = 'chip' + (c === selectedCuatri ? ' active' : '');
+        chip.textContent = 'Cuatrimestre ' + c;
+        chip.onclick = () => { selectedCuatri = c; renderInicio(); };
+        cuatriChips.appendChild(chip);
     });
 
+    const materiasDelCuatri = [...new Set(localData.modules.filter(m => m.cuatrimestre === selectedCuatri).map(m => m.materia))];
+    materiaGrid.innerHTML = '';
+    materiasDelCuatri.forEach(materia => {
+        const count = localData.records.filter(r => r.materia === materia).length;
+        const card = document.createElement('div');
+        card.className = "bg-white rounded-2xl shadow-sm border border-gray-100 p-4 flex flex-col gap-2 active:scale-95 transition-transform cursor-pointer";
+        card.innerHTML = `<span class="text-2xl">📔</span><p class="font-bold text-gray-800 text-sm leading-tight">${esc(materia)}</p><p class="text-[10px] text-gray-400 uppercase font-bold">${count} páginas</p>`;
+        card.onclick = () => openMateria(materia);
+        materiaGrid.appendChild(card);
+    });
+    const addCard = document.createElement('div');
+    addCard.className = "border-2 border-dashed border-gray-200 rounded-2xl p-4 flex flex-col items-center justify-center gap-1 text-gray-400 active:scale-95 transition-transform cursor-pointer";
+    addCard.innerHTML = `<span class="text-2xl">+</span><p class="text-xs font-bold text-center">Nueva Materia</p>`;
+    addCard.onclick = () => switchTab('tabAjustes', 'Configuración', document.querySelectorAll('.nav-btn')[1]);
+    materiaGrid.appendChild(addCard);
+}
+searchInput.addEventListener('input', renderInicio);
+
+function renderSearchResults(term) {
+    searchResults.innerHTML = '';
+    const grouped = {};
+    localData.modules.forEach(m => { if (!grouped[m.materia]) grouped[m.materia] = []; grouped[m.materia].push(m.tema); });
     for (const [materia, temas] of Object.entries(grouped)) {
         const materiaMatches = materia.toLowerCase().includes(term);
-        const anyTemaOrTagMatches = temas.some(t => t.toLowerCase().includes(term)) ||
-            localData.records.some(r => r.materia === materia && r.etiquetas && r.etiquetas.toLowerCase().includes(term));
-        if (term && !materiaMatches && !anyTemaOrTagMatches) continue;
+        const matchingTemas = temas.filter(t => t.toLowerCase().includes(term) ||
+            localData.records.some(r => r.materia === materia && r.tema === t && r.etiquetas && r.etiquetas.toLowerCase().includes(term)));
+        if (!materiaMatches && matchingTemas.length === 0) continue;
 
-        const matDiv = document.createElement('div');
-        matDiv.className = "bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden";
-        matDiv.innerHTML = `<div class="bg-gray-50 px-4 py-3 border-b border-gray-100 font-bold text-gray-800 text-sm flex items-center gap-2"><span class="text-iub text-lg">📚</span> ${esc(materia)}</div>`;
-
-        temas.forEach(tema => {
-            const tagMatch = localData.records.some(r => r.materia === materia && r.tema === tema && r.etiquetas && r.etiquetas.toLowerCase().includes(term));
-            if (term && !materiaMatches && !tema.toLowerCase().includes(term) && !tagMatch) return;
-            const count = localData.records.filter(r => r.materia === materia && r.tema === tema).length;
+        const box = document.createElement('div');
+        box.className = "bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden";
+        box.innerHTML = `<div class="bg-gray-50 px-4 py-3 border-b border-gray-100 font-bold text-gray-800 text-sm">📚 ${esc(materia)}</div>`;
+        const temasToShow = materiaMatches ? temas : matchingTemas;
+        temasToShow.forEach(t => {
             const item = document.createElement('div');
             item.className = "px-4 py-3 flex justify-between items-center border-b border-gray-50 active:bg-gray-50 cursor-pointer";
-            item.innerHTML = `<div><p class="font-semibold text-gray-700 text-sm flex items-center gap-2"><span class="text-blue-400 text-lg">📁</span> ${esc(tema)}</p><p class="text-[10px] text-gray-400 uppercase font-bold tracking-wider ml-7">${count} Documentos</p></div><span class="text-gray-300">›</span>`;
-            item.onclick = () => openCarpeta(materia, tema);
-            matDiv.appendChild(item);
+            item.innerHTML = `<span class="text-sm font-semibold text-gray-700">📁 ${esc(t)}</span><span class="text-gray-300">›</span>`;
+            item.onclick = () => { searchInput.value = ''; openMateria(materia); openTema(materia, t); };
+            box.appendChild(item);
         });
-        estructuraGrid.appendChild(matDiv);
+        searchResults.appendChild(box);
     }
+    if (!searchResults.innerHTML) searchResults.innerHTML = '<p class="text-center text-gray-400 text-sm py-10">Sin resultados.</p>';
 }
-searchInput.addEventListener('input', (e) => renderExplorador(e.target.value));
 
-// --- CUADERNO: agrupación cronológica por día ---
+// --- NAVEGACIÓN: CUADERNO DE UNA MATERIA ---
+function openMateria(materia) {
+    const temas = localData.modules.filter(m => m.materia === materia).map(m => m.tema);
+    const lastTema = localStorage.getItem('lastTema_' + materia);
+    const defaultTema = (lastTema && temas.includes(lastTema)) ? lastTema : temas[0];
+
+    headerTitle.textContent = materia;
+    btnBackToInicio.classList.remove('hide');
+    btnExportPDF.classList.remove('hide');
+    document.querySelectorAll('.tab-content').forEach(e => e.classList.remove('active'));
+    el('tabMateria').classList.add('active');
+    captureBar.classList.remove('hide');
+    bottomNav.classList.add('hide');
+
+    renderTemaChips(materia);
+    if (defaultTema) openTema(materia, defaultTema);
+    else notebookFeed.innerHTML = '<p class="col-span-2 text-center text-gray-400 text-sm py-10">Crea un tema para empezar a capturar.</p>';
+}
+
+function renderTemaChips(materia) {
+    const temas = localData.modules.filter(m => m.materia === materia).map(m => m.tema);
+    temaChips.innerHTML = '';
+    temas.forEach(t => {
+        const chip = document.createElement('button');
+        chip.className = 'chip' + (t === currentContext.tema ? ' active' : '');
+        chip.textContent = t;
+        chip.onclick = () => openTema(materia, t);
+        temaChips.appendChild(chip);
+    });
+    const addChip = document.createElement('button');
+    addChip.className = 'chip';
+    addChip.textContent = '+ Tema';
+    addChip.onclick = () => quickAddTema(materia);
+    temaChips.appendChild(addChip);
+}
+
+function openTema(materia, tema) {
+    const mod = localData.modules.find(m => m.materia === materia && m.tema === tema);
+    currentContext = { cuatrimestre: mod ? mod.cuatrimestre : "General", materia, tema };
+    localStorage.setItem('lastTema_' + materia, tema);
+    renderTemaChips(materia);
+    renderNotebookFeed();
+}
+
+async function quickAddTema(materia) {
+    const tema = prompt('Nombre del nuevo tema/corte para "' + materia + '":');
+    if (!tema || !tema.trim()) return;
+    if (!navigator.onLine) { showBanner("⚠️ Necesitas conexión para crear un tema nuevo.", "warn"); return; }
+    const cuatri = (localData.modules.find(m => m.materia === materia) || {}).cuatrimestre || "General";
+    try {
+        const res = await fetch(GAS_URL, { method: 'POST', headers: { "Content-Type": "text/plain;charset=utf-8" }, body: JSON.stringify({ action: "add_module", pin: sessionPin, cuatrimestre: cuatri, materia, tema: tema.trim() }) });
+        const result = await res.json();
+        if (result.status === "success") {
+            localData.modules.push(result.newModule); saveLocalData();
+            renderTemaChips(materia);
+            openTema(materia, result.newModule.tema);
+        } else showBanner("⚠️ " + (result.message || "No se pudo crear el tema."), "warn");
+    } catch (e) { showBanner("⚠️ Sin conexión con el servidor.", "warn"); }
+}
+
 function formatFechaLarga(fechaStr) {
     const soloFecha = (fechaStr || "").split(' ')[0];
     const [y, m, d] = soloFecha.split('-').map(Number);
@@ -333,17 +450,22 @@ function formatFechaLarga(fechaStr) {
     return `${d} de ${meses[m - 1]} de ${y}`;
 }
 
-function openCarpeta(materia, tema) {
-    currentFolderFilter = { materia, tema };
-    carpetaTitulo.textContent = tema; carpetaSubtitulo.textContent = materia;
-    galeriaGrid.innerHTML = '';
+function renderNotebookFeedIfActive() {
+    if (el('tabMateria').classList.contains('active')) renderNotebookFeed();
+}
+
+function renderNotebookFeed() {
+    const { materia, tema } = currentContext;
+    notebookFeed.innerHTML = '';
+    if (!materia || !tema) return;
 
     const records = localData.records
         .filter(r => r.materia === materia && r.tema === tema)
         .sort((a, b) => (b.fecha || "").localeCompare(a.fecha || ""));
 
     if (records.length === 0) {
-        galeriaGrid.innerHTML = `<p class="col-span-2 text-center text-gray-400 text-sm py-10">Aún no hay páginas en este cuaderno.</p>`;
+        notebookFeed.innerHTML = `<p class="col-span-2 text-center text-gray-400 text-sm py-10">Aún no hay páginas en este cuaderno.<br>Usa los botones de abajo para empezar.</p>`;
+        return;
     }
 
     let lastDay = null;
@@ -354,60 +476,123 @@ function openCarpeta(materia, tema) {
             const header = document.createElement('div');
             header.className = "col-span-2 pt-3 pb-1 first:pt-0";
             header.innerHTML = `<p class="text-[11px] font-bold text-gray-400 uppercase tracking-wider border-b border-gray-100 pb-1">🗓️ ${esc(formatFechaLarga(r.fecha))}</p>`;
-            galeriaGrid.appendChild(header);
+            notebookFeed.appendChild(header);
         }
 
         const div = document.createElement('div');
-        div.className = "aspect-[3/4] bg-gray-100 rounded-xl overflow-hidden shadow-sm relative active:scale-95 transition-transform";
+        div.className = "aspect-[3/4] bg-gray-100 rounded-xl overflow-hidden shadow-sm relative active:scale-95 transition-transform" + (r._pending ? " opacity-70" : "");
         const commentCount = (r.comentarios || []).length;
         if (r.url) {
             div.innerHTML = `<img src="${esc(r.url)}" class="w-full h-full object-cover" loading="lazy">
-            <div class="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/80 to-transparent p-2 pt-6"><p class="text-white text-[9px] font-bold tracking-wider">${esc(r.fecha.split(' ')[1] || '')}</p></div>`;
+            <div class="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/80 to-transparent p-2 pt-6"><p class="text-white text-[9px] font-bold tracking-wider">${esc((r.fecha || '').split(' ')[1] || '')}</p></div>`;
             if (r.etiquetas) div.innerHTML += `<span class="absolute top-2 right-2 bg-blue-500 text-white text-[8px] px-1.5 py-0.5 rounded font-bold">${esc(r.etiquetas.split(',')[0])}</span>`;
         } else {
             div.innerHTML = `<div class="w-full h-full p-3 text-xs text-gray-600 font-medium overflow-hidden bg-white border border-gray-200">${esc(r.nota)}</div>`;
         }
-        if (commentCount > 0) div.innerHTML += `<span class="absolute top-2 left-2 bg-gray-900/80 text-white text-[8px] px-1.5 py-0.5 rounded-full font-bold">💬 ${commentCount}</span>`;
+        if (r._pending) div.innerHTML += `<span class="absolute top-2 left-2 bg-gray-900/80 text-white text-[8px] px-1.5 py-0.5 rounded-full font-bold">⏳ subiendo</span>`;
+        else if (commentCount > 0) div.innerHTML += `<span class="absolute top-2 left-2 bg-gray-900/80 text-white text-[8px] px-1.5 py-0.5 rounded-full font-bold">💬 ${commentCount}</span>`;
         div.onclick = () => showModal(r, records);
-        galeriaGrid.appendChild(div);
+        notebookFeed.appendChild(div);
     });
-    document.querySelectorAll('.tab-content').forEach(e => e.classList.remove('active'));
-    tabCarpeta.classList.add('active');
 }
-btnVolverExplorador.addEventListener('click', () => switchTab('tabExplorador', 'Explorador'));
 
-// --- MÓDULO DE AUTO-COMMIT (Flujo Directo) ---
-async function commitToVault(filesArray = []) {
-    const mat = materiaSelect.value; const tem = temaSelect.value;
-    if (!mat || !tem) { alert("⚠️ Selecciona Materia y Tema primero."); return false; }
+// --- CAPTURA UNIFICADA (foto / galería / S-Pen / texto rápido) ---
+async function commitPhotoRecord(blob, tipo, offerComposer) {
+    const ctx = currentContext;
+    if (!ctx.materia || !ctx.tema) { alert("⚠️ Entra a una materia y un tema primero."); return null; }
 
-    const moduleMatch = localData.modules.find(m => m.materia === mat);
-    const cuatri = moduleMatch ? moduleMatch.cuatrimestre : "General";
-    const tags = etiquetasInput.value;
-    const nota = textoNota.value;
+    const clientId = makeId();
+    const localUrl = URL.createObjectURL(blob);
+    const record = {
+        id: clientId, fecha: localNow(), cuatrimestre: ctx.cuatrimestre, materia: ctx.materia, tema: ctx.tema,
+        etiquetas: "", tipo, url: localUrl, fileId: "", nota: "", comentarios: [], _pending: true
+    };
+    localData.records.unshift(record);
+    saveLocalData();
+    renderNotebookFeedIfActive();
 
-    statusMessage.textContent = "⏳ Guardando en el dispositivo...";
-    statusMessage.classList.remove('hidden');
-
-    for (let file of filesArray) {
-        const blob = await compressFileToBlob(file);
-        await addToQueue({ action: "save", pin: sessionPin, cuatrimestre: cuatri, materia: mat, tema: tem, etiquetas: tags, tipo: "ARCHIVO", textoNota: nota, blobFile: blob });
-    }
-
-    if (filesArray.length === 0 && nota.trim() !== "") {
-        await addToQueue({ action: "save", pin: sessionPin, cuatrimestre: cuatri, materia: mat, tema: tem, etiquetas: tags, tipo: "TEXTO", textoNota: nota });
-    }
-
-    etiquetasInput.value = ""; textoNota.value = "";
-    statusMessage.textContent = "✅ Guardado localmente. Sincronizando...";
-    setTimeout(() => statusMessage.classList.add('hidden'), 2500);
-
+    await addToQueue({ action: "save", pin: sessionPin, idRegistro: clientId, cuatrimestre: ctx.cuatrimestre, materia: ctx.materia, tema: ctx.tema, etiquetas: "", tipo, textoNota: "", blobFile: blob });
     updateQueueBadge(); processQueue();
-    return true;
+
+    if (offerComposer) openComposer('comment', clientId);
+    return clientId;
 }
 
-galleryInput.addEventListener('change', (e) => { if (e.target.files.length > 0) commitToVault(Array.from(e.target.files)); e.target.value = ""; });
-cameraInput.addEventListener('change', (e) => { if (e.target.files.length > 0) commitToVault(Array.from(e.target.files)); e.target.value = ""; });
+async function commitTextRecord(texto) {
+    const ctx = currentContext;
+    if (!ctx.materia || !ctx.tema) { alert("⚠️ Entra a una materia y un tema primero."); return null; }
+
+    const clientId = makeId();
+    const record = { id: clientId, fecha: localNow(), cuatrimestre: ctx.cuatrimestre, materia: ctx.materia, tema: ctx.tema, etiquetas: "", tipo: "TEXTO", url: "", fileId: "", nota: texto, comentarios: [] };
+    localData.records.unshift(record);
+    saveLocalData();
+    renderNotebookFeedIfActive();
+
+    await addToQueue({ action: "save", pin: sessionPin, idRegistro: clientId, cuatrimestre: ctx.cuatrimestre, materia: ctx.materia, tema: ctx.tema, etiquetas: "", tipo: "TEXTO", textoNota: texto });
+    updateQueueBadge(); processQueue();
+    return clientId;
+}
+
+galleryInput.addEventListener('change', async (e) => {
+    const files = Array.from(e.target.files || []);
+    e.target.value = "";
+    if (files.length === 0) return;
+    for (const file of files) {
+        const blob = await compressFileToBlob(file);
+        await commitPhotoRecord(blob, "ARCHIVO", files.length === 1);
+    }
+});
+cameraInput.addEventListener('change', async (e) => {
+    const files = Array.from(e.target.files || []);
+    e.target.value = "";
+    if (files.length === 0) return;
+    const blob = await compressFileToBlob(files[0]);
+    await commitPhotoRecord(blob, "ARCHIVO", true);
+});
+
+el('btnQuickText').addEventListener('click', () => {
+    if (!currentContext.materia || !currentContext.tema) { alert("⚠️ Entra a una materia y un tema primero."); return; }
+    openComposer('text', null);
+});
+
+// --- BARRA DE COMENTARIO / TEXTO RÁPIDO (composerStrip) ---
+function openComposer(mode, recordId) {
+    composerMode = mode; composerRecordId = recordId;
+    composerInput.value = "";
+    composerInput.placeholder = mode === 'text' ? "Escribe tu nota..." : "Comentario para esta captura (opcional)...";
+    composerStrip.classList.remove('hide');
+    composerInput.focus();
+}
+function closeComposer() {
+    composerStrip.classList.add('hide');
+    composerMode = null; composerRecordId = null;
+}
+btnComposerDismiss.addEventListener('click', closeComposer);
+btnComposerSend.addEventListener('click', async () => {
+    const texto = composerInput.value.trim();
+    if (!texto) { closeComposer(); return; }
+    if (composerMode === 'comment' && composerRecordId) {
+        await addComentarioARegistro(composerRecordId, texto);
+    } else if (composerMode === 'text') {
+        await commitTextRecord(texto);
+    }
+    closeComposer();
+});
+composerInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') btnComposerSend.click(); });
+
+async function addComentarioARegistro(idRegistro, texto) {
+    const record = localData.records.find(r => r.id === idRegistro);
+    if (!record) return;
+    if (!record.comentarios) record.comentarios = [];
+    const tempId = 'local_' + Date.now();
+    record.comentarios.push({ id: tempId, fecha: localNow(), texto });
+    saveLocalData();
+    renderNotebookFeedIfActive();
+    if (currentRecordId === idRegistro) renderModalComments(record);
+
+    await addToQueue({ action: "add_comment", pin: sessionPin, idRegistro, texto, localCommentId: tempId });
+    updateQueueBadge(); processQueue();
+}
 
 // --- MOTOR S-PEN V2 (120HZ ALTA PRECISIÓN Y AUTO-COMMIT) ---
 const canvasOverlay = el('drawingOverlay'), canvas = el('canvasNote'), ctx = canvas.getContext('2d', { desynchronized: true });
@@ -427,7 +612,7 @@ function clearCanvasUI() {
 }
 
 el('btnOpenNotebook').addEventListener('click', () => {
-    if (!materiaSelect.value || !temaSelect.value) { alert("⚠️ Selecciona Materia y Tema antes de dibujar."); return; }
+    if (!currentContext.materia || !currentContext.tema) { alert("⚠️ Entra a una materia y un tema primero."); return; }
     resizeCanvas(); canvasOverlay.classList.remove('hide');
 });
 el('btnCerrarCanvas').addEventListener('click', () => canvasOverlay.classList.add('hide'));
@@ -482,22 +667,10 @@ canvas.addEventListener('pointermove', (e) => {
 });
 canvas.addEventListener('pointerup', (e) => { if (e.pointerType === 'pen' || e.pointerType === 'mouse') isDrawing = false; });
 
-// Auto-Commit desde Canvas
 el('btnGuardarCanvas').addEventListener('click', () => {
     canvas.toBlob(async (blob) => {
         canvasOverlay.classList.add('hide');
-        const mat = materiaSelect.value; const tem = temaSelect.value;
-        if (!mat || !tem) return;
-        const moduleMatch = localData.modules.find(m => m.materia === mat);
-        const cuatri = moduleMatch ? moduleMatch.cuatrimestre : "General";
-
-        statusMessage.textContent = "⏳ Guardando apunte..."; statusMessage.classList.remove('hidden');
-        await addToQueue({ action: "save", pin: sessionPin, cuatrimestre: cuatri, materia: mat, tema: tem, etiquetas: etiquetasInput.value, tipo: "NOTA_SPEN", textoNota: textoNota.value, blobFile: blob });
-
-        etiquetasInput.value = ""; textoNota.value = "";
-        statusMessage.textContent = "✅ Apunte guardado localmente.";
-        setTimeout(() => statusMessage.classList.add('hidden'), 2500);
-        updateQueueBadge(); processQueue();
+        await commitPhotoRecord(blob, "NOTA_SPEN", true);
     }, 'image/jpeg', 0.9);
 });
 
@@ -541,6 +714,7 @@ async function deleteComentario(record, comentarioId) {
     record.comentarios = (record.comentarios || []).filter(c => c.id !== comentarioId);
     saveLocalData();
     renderModalComments(record);
+    renderNotebookFeedIfActive();
     if (!comentarioId.toString().startsWith('local_')) {
         await addToQueue({ action: "delete_comment", pin: sessionPin, idComentario: comentarioId });
         updateQueueBadge(); processQueue();
@@ -550,19 +724,8 @@ async function deleteComentario(record, comentarioId) {
 el('btnAddComentario').addEventListener('click', async () => {
     const texto = comentarioInput.value.trim();
     if (!texto || !currentRecordId) return;
-    const record = localData.records.find(r => r.id === currentRecordId);
-    if (!record) return;
-
-    const fechaLocal = new Date().toISOString().slice(0, 16).replace('T', ' ');
-    if (!record.comentarios) record.comentarios = [];
-    const tempId = 'local_' + Date.now();
-    record.comentarios.push({ id: tempId, fecha: fechaLocal, texto });
-    saveLocalData();
-    renderModalComments(record);
     comentarioInput.value = "";
-
-    await addToQueue({ action: "add_comment", pin: sessionPin, idRegistro: currentRecordId, texto, localCommentId: tempId });
-    updateQueueBadge(); processQueue();
+    await addComentarioARegistro(currentRecordId, texto);
 });
 comentarioInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') el('btnAddComentario').click(); });
 
@@ -578,14 +741,13 @@ el('btnDelete').addEventListener('click', async () => {
     if (!confirm("¿Eliminar archivo permanentemente?")) return;
     const rec = localData.records.find(r => r.id === currentRecordId);
     if (!rec) return;
-    const fileId = rec.fileId || (rec.url ? (rec.url.split('/d/')[1] || null) : null);
+    const fileId = rec.fileId || (rec.url && rec.url.includes('/d/') ? rec.url.split('/d/')[1] : null);
 
-    // Borrado optimista: se ve al instante y funciona sin conexión (se confirma al servidor luego).
     localData.records = localData.records.filter(r => r.id !== currentRecordId);
     saveLocalData();
     imageModal.classList.add('hide');
-    if (currentFolderFilter.tema) openCarpeta(currentFolderFilter.materia, currentFolderFilter.tema);
-    renderExplorador();
+    renderNotebookFeedIfActive();
+    renderInicio();
 
     await addToQueue({ action: "delete", pin: sessionPin, idRegistro: currentRecordId, fileId: fileId });
     updateQueueBadge(); processQueue();
@@ -600,14 +762,14 @@ el('btnDownload').addEventListener('click', () => {
     if (r && r.url) window.open(r.url, '_blank');
 });
 
-// --- AJUSTES Y CREACIÓN ---
+// --- AJUSTES ---
 el('btnAgregarEstructura').addEventListener('click', async () => {
     const q = el('nuevoCuatrimestre').value, m = el('nuevaMateria').value.trim(), t = el('nuevoTema').value.trim();
     if (!q || !m || !t) return;
     const statusEl = el('ajustesStatus');
     statusEl.textContent = "Creando..."; statusEl.classList.remove('hidden'); el('btnAgregarEstructura').disabled = true;
     if (!navigator.onLine) {
-        statusEl.textContent = "⚠️ Necesitas conexión para crear una carpeta nueva.";
+        statusEl.textContent = "⚠️ Necesitas conexión para crear una materia nueva.";
         el('btnAgregarEstructura').disabled = false;
         return;
     }
@@ -616,7 +778,7 @@ el('btnAgregarEstructura').addEventListener('click', async () => {
         const result = await res.json();
         if (result.status === "success") {
             localData.modules.push(result.newModule); saveLocalData();
-            renderDropdowns(); renderExplorador(); statusEl.textContent = "✅ Creado";
+            statusEl.textContent = "✅ Creado";
             el('nuevaMateria').value = ""; el('nuevoTema').value = ""; setTimeout(() => statusEl.classList.add('hidden'), 2000);
         } else {
             statusEl.textContent = "⚠️ " + (result.message || "No se pudo crear.");
@@ -632,32 +794,32 @@ el('btnLimpiarCache').addEventListener('click', () => {
 
 // --- EXPORTACIÓN PDF PROFESIONAL (JSPDF) ---
 btnExportPDF.addEventListener('click', async () => {
-    if (!currentFolderFilter.tema) return;
+    if (!currentContext.tema) return;
     const { jsPDF } = window.jspdf; const doc = new jsPDF('p', 'mm', 'a4');
     const records = localData.records
-        .filter(r => r.materia === currentFolderFilter.materia && r.tema === currentFolderFilter.tema)
+        .filter(r => r.materia === currentContext.materia && r.tema === currentContext.tema)
         .sort((a, b) => (a.fecha || "").localeCompare(b.fecha || ""));
     if (records.length === 0) return alert("No hay páginas para exportar.");
 
-    btnExportPDF.textContent = "Generando...";
-    doc.setFontSize(22); doc.text(currentFolderFilter.materia, 10, 20);
-    doc.setFontSize(14); doc.text(`Tema: ${currentFolderFilter.tema}`, 10, 30);
+    btnExportPDF.textContent = "⏳";
+    doc.setFontSize(22); doc.text(currentContext.materia, 10, 20);
+    doc.setFontSize(14); doc.text(`Tema: ${currentContext.tema}`, 10, 30);
     doc.setFontSize(10); doc.text(`Generado: ${new Date().toLocaleDateString()}`, 10, 40);
 
     let first = true;
     for (const rec of records) {
-        if (!first) { doc.addPage(); }
+        if (!first) doc.addPage();
         first = false;
         let yPos = 20;
-        doc.setFontSize(10); doc.text(rec.fecha || "", 10, yPos); yPos += 8;
+        doc.setFontSize(10); doc.setTextColor(0); doc.text(rec.fecha || "", 10, yPos); yPos += 8;
 
         if (rec.url) {
             try {
                 const img = new Image(); img.crossOrigin = "Anonymous"; img.src = rec.url;
                 await new Promise((resolve) => { img.onload = resolve; img.onerror = resolve; });
-                const canvas = document.createElement('canvas'); canvas.width = img.width; canvas.height = img.height;
-                canvas.getContext('2d').drawImage(img, 0, 0);
-                const dataUri = canvas.toDataURL('image/jpeg', 0.8);
+                const canvasImg = document.createElement('canvas'); canvasImg.width = img.width; canvasImg.height = img.height;
+                canvasImg.getContext('2d').drawImage(img, 0, 0);
+                const dataUri = canvasImg.toDataURL('image/jpeg', 0.8);
                 const imgProps = doc.getImageProperties(dataUri);
                 const pdfWidth = doc.internal.pageSize.getWidth() - 20;
                 const pdfHeight = (imgProps.height * pdfWidth) / imgProps.width;
@@ -666,7 +828,7 @@ btnExportPDF.addEventListener('click', async () => {
             } catch (e) { console.error("Saltando imagen inaccesible por CORS"); }
         }
 
-        if (rec.nota) { doc.setFontSize(11); yPos += doc.splitTextToSize(rec.nota, 190).length === 0 ? 0 : 0; doc.text(doc.splitTextToSize("Nota: " + rec.nota, 190), 10, yPos); yPos += doc.splitTextToSize(rec.nota, 190).length * 6 + 4; }
+        if (rec.nota) { doc.setFontSize(11); doc.text(doc.splitTextToSize("Nota: " + rec.nota, 190), 10, yPos); yPos += doc.splitTextToSize(rec.nota, 190).length * 6 + 4; }
 
         (rec.comentarios || []).forEach(c => {
             const lines = doc.splitTextToSize(`[${c.fecha}] ${c.texto}`, 185);
@@ -677,8 +839,8 @@ btnExportPDF.addEventListener('click', async () => {
             doc.setTextColor(0);
         });
     }
-    doc.save(`IUB_Vault_${currentFolderFilter.materia}_${currentFolderFilter.tema}.pdf`);
-    btnExportPDF.textContent = "📑 Generar PDF";
+    doc.save(`IUB_Vault_${currentContext.materia}_${currentContext.tema}.pdf`);
+    btnExportPDF.textContent = "📑";
 });
 
 initApp();
