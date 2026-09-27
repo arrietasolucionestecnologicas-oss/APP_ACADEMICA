@@ -647,18 +647,34 @@ async function addComentarioARegistro(idRegistro, texto) {
 
 // --- MOTOR S-PEN V2 (120HZ ALTA PRECISIÓN Y AUTO-COMMIT) ---
 const canvasOverlay = el('drawingOverlay'), canvas = el('canvasNote'), ctx = canvas.getContext('2d', { desynchronized: true });
+const canvasScrollArea = el('canvasScrollArea');
 const bgRow = el('bgRow');
 let isDrawing = false, lastMid = null, currentColor = '#000000', currentBg = 'bg-white';
 let canvasBackgroundImage = null; // foto sobre la que se está anotando con el S-Pen (o null = hoja en blanco)
 
-function resizeCanvas() { canvas.width = window.innerWidth; canvas.height = window.innerHeight - 100; clearCanvasUI(); }
+const SHEET_HEIGHT_FACTOR = 2.5; // la hoja es 2.5x más alta que la pantalla, para tener espacio real de sobra donde escribir
+
+function resizeCanvas() {
+    canvas.width = window.innerWidth;
+    canvas.height = Math.round(canvasScrollArea.clientHeight * SHEET_HEIGHT_FACTOR) || Math.round(window.innerHeight * SHEET_HEIGHT_FACTOR);
+    clearCanvasUI();
+    canvasScrollArea.scrollTop = 0;
+}
 function clearCanvasUI() {
     ctx.fillStyle = "white"; ctx.fillRect(0, 0, canvas.width, canvas.height);
     if (canvasBackgroundImage) {
+        // La foto ocupa solo la mitad superior del ancho, dejando el resto de la hoja libre para escribir.
         const img = canvasBackgroundImage;
-        const scale = Math.min(canvas.width / img.width, canvas.height / img.height);
+        const maxW = canvas.width * 0.9;
+        const maxH = canvas.height * 0.45;
+        const scale = Math.min(maxW / img.width, maxH / img.height);
         const w = img.width * scale, h = img.height * scale;
-        ctx.drawImage(img, (canvas.width - w) / 2, (canvas.height - h) / 2, w, h);
+        const x = (canvas.width - w) / 2, y = 20;
+        ctx.drawImage(img, x, y, w, h);
+
+        // Rayas debajo de la foto: dejan claro que ahí se escribe, en toda la hoja restante.
+        ctx.strokeStyle = '#e5e7eb'; ctx.lineWidth = 1;
+        for (let i = y + h + 28; i < canvas.height; i += 32) { ctx.beginPath(); ctx.moveTo(16, i); ctx.lineTo(canvas.width - 16, i); ctx.stroke(); }
         return;
     }
     if (currentBg === 'bg-lines') {
@@ -679,15 +695,16 @@ async function openAnnotateWithImage(file) {
     await new Promise((resolve) => { img.onload = resolve; img.onerror = resolve; img.src = objectUrl; });
     canvasBackgroundImage = img;
     bgRow.classList.add('hide');
-    resizeCanvas();
     canvasOverlay.classList.remove('hide');
+    resizeCanvas();
 }
 
 el('btnOpenNotebook').addEventListener('click', () => {
     if (!currentContext.materia || !currentContext.tema) { alert("⚠️ Entra a una materia y un tema primero."); return; }
     canvasBackgroundImage = null;
     bgRow.classList.remove('hide');
-    resizeCanvas(); canvasOverlay.classList.remove('hide');
+    canvasOverlay.classList.remove('hide');
+    resizeCanvas();
 });
 el('btnCerrarCanvas').addEventListener('click', () => { canvasOverlay.classList.add('hide'); canvasBackgroundImage = null; });
 el('btnBorrarLienzo').addEventListener('click', clearCanvasUI);

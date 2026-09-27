@@ -32,7 +32,7 @@
         .chip-row::-webkit-scrollbar { display: none; }
 
         #drawingOverlay { position: fixed; inset: 0; z-index: 100; background: white; display: flex; flex-direction: column; }
-        #canvasNote { flex: 1; touch-action: none; cursor: crosshair; }
+        #canvasNote { cursor: crosshair; }
     </style>
 </head>
 <body class="text-gray-800 h-[100dvh] flex flex-col overflow-hidden">
@@ -157,7 +157,10 @@
             <button class="text-xs bg-gray-700 text-white px-2 py-1 rounded tool-bg" data-bg="bg-lines">Raya</button>
             <button class="text-xs bg-gray-700 text-white px-2 py-1 rounded tool-bg" data-bg="bg-grid">Cuadro</button>
         </div>
-        <canvas id="canvasNote" class="bg-white w-full h-full touch-none"></canvas>
+        <div id="canvasScrollArea" class="flex-1 overflow-y-auto overflow-x-hidden bg-white">
+            <canvas id="canvasNote" class="bg-white block" style="touch-action: pan-y;"></canvas>
+        </div>
+        <p class="text-center text-[10px] text-gray-400 py-1 bg-gray-50 shrink-0">↕ Desliza con el dedo para ver más hoja · escribe con el S-Pen</p>
     </div>
 
     <div id="imageModal" class="absolute inset-0 bg-black/95 z-[150] hide flex flex-col backdrop-blur-sm">
