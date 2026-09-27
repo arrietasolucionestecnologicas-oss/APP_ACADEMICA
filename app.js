@@ -1,6 +1,6 @@
 // CONFIGURACIÓN OBLIGATORIA
 const GAS_URL = "https://script.google.com/macros/s/AKfycbyPIv-c9UqYflEdfiX1aCoCSHnNOz0qCGcXRkH8wxaRZd-c4bHYPOh0qbfkSJ5-Oij-/exec";
-const APP_VERSION = "2026.09.27-1"; // se muestra en Ajustes para confirmar qué versión cargó tu celular
+const APP_VERSION = "2026.09.27-2-sin-sw"; // se muestra en Ajustes para confirmar qué versión cargó tu celular
 
 // --- INDEXEDDB V2 (SOPORTE DE BLOBS SEGURO) ---
 const DB_NAME = 'IUBVaultDB_v2';
@@ -161,21 +161,11 @@ function initApp() {
     const versionTag = el('appVersionTag');
     if (versionTag) versionTag.textContent = 'Versión ' + APP_VERSION;
 
+    // Nota: no se registra Service Worker. Después de varias pruebas, mezclar
+    // versiones cacheadas de HTML/JS terminaba rompiendo la app en el celular.
+    // Se prioriza que la app abra siempre con lo último del servidor.
     if ('serviceWorker' in navigator) {
-        navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then((reg) => {
-            // Revisa de inmediato si hay una versión nueva (no espera al chequeo periódico del navegador).
-            reg.update().catch(() => {});
-            reg.addEventListener('updatefound', () => {
-                const newWorker = reg.installing;
-                if (!newWorker) return;
-                newWorker.addEventListener('statechange', () => {
-                    if (newWorker.state === 'activated') {
-                        showBanner("✅ Nueva versión instalada. Actualizando...", "ok", true);
-                        setTimeout(() => location.reload(), 1200);
-                    }
-                });
-            });
-        }).catch(() => {});
+        navigator.serviceWorker.getRegistrations().then((regs) => regs.forEach((r) => r.unregister()));
     }
 }
 
