@@ -117,6 +117,7 @@ const el = (id) => document.getElementById(id);
 const loginScreen = el('loginScreen'), pinInput = el('pinInput'), btnLogin = el('btnLogin'), loginError = el('loginError');
 const headerTitle = el('headerTitle'), btnSync = el('btnSync'), queueBadge = el('queueBadge'), syncIcon = el('syncIcon');
 const connBanner = el('connBanner');
+const installBanner = el('installBanner'), btnInstallApp = el('btnInstallApp'), btnDismissInstall = el('btnDismissInstall');
 const btnBackToInicio = el('btnBackToInicio'), btnExportPDF = el('btnExportPDF');
 const searchInput = el('searchInput'), cuatriChips = el('cuatriChips'), materiaGrid = el('materiaGrid'), searchResults = el('searchResults');
 const temaChips = el('temaChips'), notebookFeed = el('notebookFeed');
@@ -160,6 +161,29 @@ function initApp() {
         navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).catch(() => {});
     }
 }
+
+// --- INSTALAR COMO APP (banner propio, no depende del aviso automático de Chrome) ---
+let deferredInstallPrompt = null;
+window.addEventListener('beforeinstallprompt', (e) => {
+    e.preventDefault();
+    deferredInstallPrompt = e;
+    if (!localStorage.getItem('installDismissed')) installBanner.classList.remove('hide');
+});
+btnInstallApp.addEventListener('click', async () => {
+    if (!deferredInstallPrompt) return;
+    installBanner.classList.add('hide');
+    deferredInstallPrompt.prompt();
+    await deferredInstallPrompt.userChoice;
+    deferredInstallPrompt = null;
+});
+btnDismissInstall.addEventListener('click', () => {
+    installBanner.classList.add('hide');
+    localStorage.setItem('installDismissed', '1');
+});
+window.addEventListener('appinstalled', () => {
+    installBanner.classList.add('hide');
+    deferredInstallPrompt = null;
+});
 
 // --- NETWORK & SYNC ---
 async function validarPinRequest(pin, isSilent = false) {
@@ -537,17 +561,22 @@ galleryInput.addEventListener('change', async (e) => {
     const files = Array.from(e.target.files || []);
     e.target.value = "";
     if (files.length === 0) return;
-    for (const file of files) {
-        const blob = await compressFileToBlob(file);
-        await commitPhotoRecord(blob, "ARCHIVO", files.length === 1);
+    if (!currentContext.materia || !currentContext.tema) { alert("⚠️ Entra a una materia y un tema primero."); return; }
+    if (files.length === 1) {
+        await openAnnotateWithImage(files[0]);
+    } else {
+        for (const file of files) {
+            const blob = await compressFileToBlob(file);
+            await commitPhotoRecord(blob, "ARCHIVO", false);
+        }
     }
 });
 cameraInput.addEventListener('change', async (e) => {
     const files = Array.from(e.target.files || []);
     e.target.value = "";
     if (files.length === 0) return;
-    const blob = await compressFileToBlob(files[0]);
-    await commitPhotoRecord(blob, "ARCHIVO", true);
+    if (!currentContext.materia || !currentContext.tema) { alert("⚠️ Entra a una materia y un tema primero."); return; }
+    await openAnnotateWithImage(files[0]);
 });
 
 el('btnQuickText').addEventListener('click', () => {
@@ -596,11 +625,20 @@ async function addComentarioARegistro(idRegistro, texto) {
 
 // --- MOTOR S-PEN V2 (120HZ ALTA PRECISIÓN Y AUTO-COMMIT) ---
 const canvasOverlay = el('drawingOverlay'), canvas = el('canvasNote'), ctx = canvas.getContext('2d', { desynchronized: true });
+const bgRow = el('bgRow');
 let isDrawing = false, lastMid = null, currentColor = '#000000', currentBg = 'bg-white';
+let canvasBackgroundImage = null; // foto sobre la que se está anotando con el S-Pen (o null = hoja en blanco)
 
 function resizeCanvas() { canvas.width = window.innerWidth; canvas.height = window.innerHeight - 100; clearCanvasUI(); }
 function clearCanvasUI() {
     ctx.fillStyle = "white"; ctx.fillRect(0, 0, canvas.width, canvas.height);
+    if (canvasBackgroundImage) {
+        const img = canvasBackgroundImage;
+        const scale = Math.min(canvas.width / img.width, canvas.height / img.height);
+        const w = img.width * scale, h = img.height * scale;
+        ctx.drawImage(img, (canvas.width - w) / 2, (canvas.height - h) / 2, w, h);
+        return;
+    }
     if (currentBg === 'bg-lines') {
         ctx.strokeStyle = '#e5e7eb'; ctx.lineWidth = 1;
         for (let i = 24; i < canvas.height; i += 24) { ctx.beginPath(); ctx.moveTo(0, i); ctx.lineTo(canvas.width, i); ctx.stroke(); }
@@ -611,11 +649,25 @@ function clearCanvasUI() {
     }
 }
 
+// Abre el lienzo con la foto ya cargada de fondo para poder escribir/dibujar encima con el S-Pen.
+async function openAnnotateWithImage(file) {
+    const blob = await compressFileToBlob(file);
+    const objectUrl = URL.createObjectURL(blob);
+    const img = new Image();
+    await new Promise((resolve) => { img.onload = resolve; img.onerror = resolve; img.src = objectUrl; });
+    canvasBackgroundImage = img;
+    bgRow.classList.add('hide');
+    resizeCanvas();
+    canvasOverlay.classList.remove('hide');
+}
+
 el('btnOpenNotebook').addEventListener('click', () => {
     if (!currentContext.materia || !currentContext.tema) { alert("⚠️ Entra a una materia y un tema primero."); return; }
+    canvasBackgroundImage = null;
+    bgRow.classList.remove('hide');
     resizeCanvas(); canvasOverlay.classList.remove('hide');
 });
-el('btnCerrarCanvas').addEventListener('click', () => canvasOverlay.classList.add('hide'));
+el('btnCerrarCanvas').addEventListener('click', () => { canvasOverlay.classList.add('hide'); canvasBackgroundImage = null; });
 el('btnBorrarLienzo').addEventListener('click', clearCanvasUI);
 
 window.addEventListener('resize', () => { if (!canvasOverlay.classList.contains('hide')) resizeCanvas(); });
@@ -668,9 +720,11 @@ canvas.addEventListener('pointermove', (e) => {
 canvas.addEventListener('pointerup', (e) => { if (e.pointerType === 'pen' || e.pointerType === 'mouse') isDrawing = false; });
 
 el('btnGuardarCanvas').addEventListener('click', () => {
+    const tipo = canvasBackgroundImage ? "ARCHIVO" : "NOTA_SPEN";
     canvas.toBlob(async (blob) => {
         canvasOverlay.classList.add('hide');
-        await commitPhotoRecord(blob, "NOTA_SPEN", true);
+        canvasBackgroundImage = null;
+        await commitPhotoRecord(blob, tipo, true);
     }, 'image/jpeg', 0.9);
 });
 
