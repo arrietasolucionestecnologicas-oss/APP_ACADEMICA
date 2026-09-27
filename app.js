@@ -312,7 +312,7 @@ function switchTab(tabId, title, btnEl) {
     currentContext = { cuatrimestre: null, materia: null, tema: null };
     if (tabId === 'tabInicio') { searchInput.value = ""; renderInicio(); }
 }
-btnBackToInicio.addEventListener('click', () => switchTab('tabInicio', 'IUB Vault', document.querySelector('.nav-btn')));
+btnBackToInicio.addEventListener('click', () => switchTab('tabInicio', 'Mis Apuntes', document.querySelector('.nav-btn')));
 
 function renderInicio() {
     const term = searchInput.value.toLowerCase().trim();
@@ -839,7 +839,7 @@ btnExportPDF.addEventListener('click', async () => {
             doc.setTextColor(0);
         });
     }
-    doc.save(`IUB_Vault_${currentContext.materia}_${currentContext.tema}.pdf`);
+    doc.save(`Apuntes_${currentContext.materia}_${currentContext.tema}.pdf`);
     btnExportPDF.textContent = "📑";
 });
 

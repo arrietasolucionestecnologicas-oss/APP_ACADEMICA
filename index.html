@@ -3,8 +3,10 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>IUB Vault v3</title>
+    <title>Apuntes Universidad</title>
     <link rel="manifest" href="manifest.json">
+    <link rel="icon" href="icon-192.png">
+    <link rel="apple-touch-icon" href="icon-192.png">
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <style>
@@ -36,11 +38,11 @@
 <body class="text-gray-800 h-[100dvh] flex flex-col overflow-hidden">
 
     <div id="loginScreen" class="absolute inset-0 bg-white z-[200] flex flex-col justify-center items-center p-6">
-        <div class="w-20 h-20 bg-iub rounded-2xl flex items-center justify-center mb-6 shadow-lg">
-            <span class="text-white text-3xl font-bold">V3</span>
+        <div class="w-20 h-20 bg-iub rounded-2xl flex items-center justify-center mb-6 shadow-lg text-4xl">
+            📔
         </div>
-        <h1 class="text-2xl font-bold text-gray-900 mb-1">IUB Vault</h1>
-        <p class="text-gray-500 mb-8 text-sm">Workspace Académico</p>
+        <h1 class="text-2xl font-bold text-gray-900 mb-1">Mis Apuntes</h1>
+        <p class="text-gray-500 mb-8 text-sm">Apuntes de la universidad</p>
         <input type="password" id="pinInput" placeholder="PIN de Seguridad" class="w-full max-w-xs p-4 bg-gray-50 border border-gray-200 rounded-xl text-center text-xl tracking-[0.5em] focus:border-blue-600 focus:ring-2 focus:ring-blue-100 outline-none transition-all mb-4">
         <button id="btnLogin" class="w-full max-w-xs bg-gray-900 text-white font-semibold py-4 rounded-xl shadow-md active:scale-95 transition-transform">Desbloquear Workspace</button>
         <p id="loginError" class="text-red-500 mt-4 text-sm font-medium hide">Credenciales inválidas o error de red.</p>
@@ -48,7 +50,7 @@
 
     <header class="bg-white px-4 py-3 flex justify-between items-center shrink-0 border-b border-gray-100 shadow-sm z-10 gap-2">
         <button id="btnBackToInicio" class="hide text-gray-500 text-2xl leading-none px-1">‹</button>
-        <h1 id="headerTitle" class="text-lg font-bold text-gray-800 tracking-tight truncate flex-1">IUB Vault</h1>
+        <h1 id="headerTitle" class="text-lg font-bold text-gray-800 tracking-tight truncate flex-1">Mis Apuntes</h1>
         <button id="btnExportPDF" class="hide text-xs bg-gray-100 text-gray-700 px-2.5 py-1.5 rounded-full font-medium">📑</button>
         <button id="btnSync" class="text-xs bg-gray-100 text-gray-600 px-3 py-1.5 rounded-full font-medium flex items-center gap-2 hover:bg-gray-200 transition-colors shrink-0">
             <span id="syncIcon">↻</span> <span id="queueBadge" class="hidden bg-iub text-white px-1.5 py-0.5 rounded-full text-[10px] shadow-sm">0</span>
@@ -119,7 +121,7 @@
     </div>
 
     <nav id="bottomNav" class="glass-nav flex justify-around p-2 z-10 shrink-0">
-        <button onclick="switchTab('tabInicio', 'IUB Vault', this)" class="flex flex-col items-center w-1/2 text-gray-900 active-nav hover:text-gray-900 nav-btn transition-colors">
+        <button onclick="switchTab('tabInicio', 'Mis Apuntes', this)" class="flex flex-col items-center w-1/2 text-gray-900 active-nav hover:text-gray-900 nav-btn transition-colors">
             <span class="text-2xl mb-1">📚</span><span class="text-[10px] font-bold tracking-wide">MIS CUADERNOS</span>
         </button>
         <button onclick="switchTab('tabAjustes', 'Configuración', this)" class="flex flex-col items-center w-1/2 text-gray-400 hover:text-gray-900 nav-btn transition-colors">
