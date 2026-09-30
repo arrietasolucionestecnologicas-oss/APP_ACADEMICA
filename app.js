@@ -1,6 +1,6 @@
 // CONFIGURACIÓN OBLIGATORIA
 const GAS_URL = "https://script.google.com/macros/s/AKfycbyPIv-c9UqYflEdfiX1aCoCSHnNOz0qCGcXRkH8wxaRZd-c4bHYPOh0qbfkSJ5-Oij-/exec";
-const APP_VERSION = "2026.09.30-spen-v3"; // se muestra en Ajustes para confirmar qué versión cargó tu celular
+const APP_VERSION = "2026.09.30-spen-v3.1-fixes"; // se muestra en Ajustes para confirmar qué versión cargó tu celular
 
 // --- INDEXEDDB V2 (SOPORTE DE BLOBS SEGURO) ---
 const DB_NAME = 'IUBVaultDB_v2';
