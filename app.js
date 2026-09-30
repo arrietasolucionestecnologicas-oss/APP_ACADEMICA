@@ -708,7 +708,9 @@ const canvasScrollArea = el('canvasScrollArea');
 const canvasStack = el('canvasStack');
 const bgCanvas = el('bgCanvas'), inkCanvas = el('inkCanvas');
 const bgCtx = bgCanvas.getContext('2d');
-const inkCtx = inkCanvas.getContext('2d', { desynchronized: true });
+// SIN desynchronized:true — en Android/Chrome puede renderizar negro opaco en vez de
+// transparente al apilar canvases con position:absolute. Prioridad: sin fondo negro.
+const inkCtx = inkCanvas.getContext('2d');
 const bgRow = el('bgRow');
 const toolPenBtn = el('toolPen'), toolEraserBtn = el('toolEraser');
 const thicknessRow = el('thicknessRow');
@@ -798,6 +800,7 @@ function renderBackground() {
         const iw = img.width * scale, ih = img.height * scale;
         const ix = (w - iw) / 2, iy = 20;
         bgCtx.drawImage(img, ix, iy, iw, ih);
+        doc.meta.photoBottom = iy + ih; // usado al exportar para no subir hoja vacía de más
         bgCtx.strokeStyle = '#e5e7eb'; bgCtx.lineWidth = 1;
         for (let i = iy + ih + 28; i < h; i += 32) { bgCtx.beginPath(); bgCtx.moveTo(16, i); bgCtx.lineTo(w - 16, i); bgCtx.stroke(); }
         return;
@@ -821,33 +824,53 @@ function widthForPoint(stroke, point) {
     return Math.max(0.6, stroke.width * (0.35 + curved * 1.25));
 }
 
-function drawStroke(context, stroke) {
-    if (stroke.points.length === 0) return;
-    context.save();
+function setStrokeStyle(context, stroke) {
     context.lineCap = 'round'; context.lineJoin = 'round';
     if (stroke.tool === 'eraser') { context.globalCompositeOperation = 'destination-out'; context.strokeStyle = 'rgba(0,0,0,1)'; }
     else { context.globalCompositeOperation = 'source-over'; context.strokeStyle = stroke.color; }
+}
 
-    if (stroke.points.length === 1) {
-        const p = stroke.points[0];
-        context.fillStyle = context.strokeStyle;
-        context.beginPath(); context.arc(p.x, p.y, widthForPoint(stroke, p) / 2, 0, Math.PI * 2); context.fill();
-        context.restore();
-        return;
-    }
-    for (let i = 1; i < stroke.points.length; i++) {
-        const p0 = stroke.points[i - 1], p1 = stroke.points[i];
-        const mid = { x: (p0.x + p1.x) / 2, y: (p0.y + p1.y) / 2 };
-        context.lineWidth = widthForPoint(stroke, p1);
-        context.beginPath();
-        context.moveTo(p0.x, p0.y);
-        context.quadraticCurveTo(p0.x, p0.y, mid.x, mid.y);
-        context.stroke();
-    }
+// Dibuja UN segmento continuo: arranca en `anchor` (donde terminó el segmento anterior,
+// NUNCA en el punto crudo) y usa `controlPt` como control de la curva. `endPt` es el punto
+// medio entre puntos crudos (o el punto real si es el último del trazo, ver finishStroke).
+// Esta es la única función que dibuja tinta — el repintado completo y el trazo incremental
+// en vivo llaman a la misma, así que se ven idénticos.
+function drawSegment(context, stroke, anchor, controlPt, endPt, widthRefPt) {
+    context.save();
+    setStrokeStyle(context, stroke);
+    context.lineWidth = widthForPoint(stroke, widthRefPt);
+    context.beginPath();
+    context.moveTo(anchor.x, anchor.y);
+    context.quadraticCurveTo(controlPt.x, controlPt.y, endPt.x, endPt.y);
+    context.stroke();
+    context.restore();
+}
+function drawDot(context, stroke, p) {
+    context.save();
+    setStrokeStyle(context, stroke);
+    context.fillStyle = context.strokeStyle;
+    context.beginPath(); context.arc(p.x, p.y, widthForPoint(stroke, p) / 2, 0, Math.PI * 2); context.fill();
     context.restore();
 }
 
-// Reconstrucción TOTAL de la capa de tinta desde doc.strokes (undo/redo/carga de borrador).
+// Reconstrucción TOTAL de un stroke (undo/redo/carga de borrador/resize): recorre todos
+// los puntos con el mismo algoritmo de ancla continua que el dibujo en vivo, así que el
+// resultado es idéntico visualmente, sin huecos.
+function drawStroke(context, stroke) {
+    const pts = stroke.points;
+    if (pts.length === 0) return;
+    if (pts.length === 1) { drawDot(context, stroke, pts[0]); return; }
+
+    let anchor = { x: pts[0].x, y: pts[0].y };
+    for (let i = 1; i < pts.length; i++) {
+        const prevRaw = pts[i - 1], newPt = pts[i];
+        const isLast = i === pts.length - 1;
+        const end = isLast ? { x: newPt.x, y: newPt.y } : { x: (prevRaw.x + newPt.x) / 2, y: (prevRaw.y + newPt.y) / 2 };
+        drawSegment(context, stroke, anchor, prevRaw, end, newPt);
+        anchor = end;
+    }
+}
+
 function renderInk() {
     inkCtx.clearRect(0, 0, doc.meta.docWidth, doc.meta.docHeight);
     for (const s of doc.strokes) drawStroke(inkCtx, s);
@@ -869,27 +892,35 @@ function getDocumentPoint(e) {
     };
 }
 
-// --- CICLO DE VIDA DEL TRAZO ---
+// --- CICLO DE VIDA DEL TRAZO (misma ancla continua que drawStroke, dibujado incremental) ---
+let strokeAnchor = null;
 function startStroke(pt) {
     currentStroke = { id: makeId(), tool: currentTool, color: currentColor, width: selectedWidth, pressureEnabled, points: [pt] };
-    drawStroke(inkCtx, currentStroke); // punto inicial visible de inmediato
+    strokeAnchor = { x: pt.x, y: pt.y };
+    drawDot(inkCtx, currentStroke, pt); // punto inicial visible de inmediato (por si no hay más movimiento)
 }
 function extendStroke(pt) {
     if (!currentStroke) return;
-    const prevLen = currentStroke.points.length;
+    const prevRaw = currentStroke.points[currentStroke.points.length - 1];
     currentStroke.points.push(pt);
-    // Dibuja SOLO el segmento nuevo (incremental) — nunca se repinta todo en pointermove.
-    drawStroke(inkCtx, { ...currentStroke, points: currentStroke.points.slice(Math.max(0, prevLen - 1)) });
+    const mid = { x: (prevRaw.x + pt.x) / 2, y: (prevRaw.y + pt.y) / 2 };
+    drawSegment(inkCtx, currentStroke, strokeAnchor, prevRaw, mid, pt);
+    strokeAnchor = mid;
 }
 function finishStroke() {
     if (!currentStroke) return;
+    if (currentStroke.points.length > 1) {
+        // Último tramo: del ancla (punto medio) al punto real final, para no dejar la punta corta.
+        const lastPt = currentStroke.points[currentStroke.points.length - 1];
+        drawSegment(inkCtx, currentStroke, strokeAnchor, lastPt, lastPt, lastPt);
+    }
     if (currentStroke.points.length > 0) {
         doc.strokes.push(currentStroke);
         redoStack = []; // una acción nueva invalida el historial de rehacer
         updateUndoRedoButtons();
         scheduleAutosave();
     }
-    currentStroke = null;
+    currentStroke = null; strokeAnchor = null;
 }
 
 // --- PUNTERO: pen/mouse escriben; touch nunca genera tinta (lo usa el zoom/pan) ---
@@ -1129,12 +1160,25 @@ el('btnGuardarCanvas').addEventListener('click', async () => {
     hideDraftBanner();
 });
 
+// Exporta solo el contenido real (foto + trazos), no la hoja completa de 2.5x la pantalla:
+// subir la hoja entera cuando la foto/tinta solo ocupan una fracción de arriba producía
+// fotos "excesivamente verticales" con mucho espacio en blanco desperdiciado.
 function composeFinalBlob() {
+    const w = doc.meta.docWidth, h = doc.meta.docHeight;
+    let maxY = doc.background.hasImage ? (doc.meta.photoBottom || h * 0.45) : 0;
+    for (const s of doc.strokes) {
+        for (const p of s.points) { if (p.y > maxY) maxY = p.y; }
+    }
+    const PADDING = 24;
+    const contentH = Math.min(h, Math.max(maxY + PADDING, doc.background.hasImage ? doc.meta.photoBottom + PADDING : 120));
+
     const out = document.createElement('canvas');
-    out.width = bgCanvas.width; out.height = bgCanvas.height;
+    out.width = Math.round(w * CANVAS_DPR);
+    out.height = Math.round(contentH * CANVAS_DPR);
     const octx = out.getContext('2d');
-    octx.drawImage(bgCanvas, 0, 0);
-    octx.drawImage(inkCanvas, 0, 0);
+    const sourceHPx = Math.round(contentH * CANVAS_DPR);
+    octx.drawImage(bgCanvas, 0, 0, bgCanvas.width, sourceHPx, 0, 0, out.width, out.height);
+    octx.drawImage(inkCanvas, 0, 0, inkCanvas.width, sourceHPx, 0, 0, out.width, out.height);
     return new Promise((resolve) => out.toBlob(resolve, 'image/jpeg', 0.92));
 }
 
