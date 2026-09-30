@@ -4,18 +4,47 @@ const APP_VERSION = "2026.09.27-2-sin-sw"; // se muestra en Ajustes para confirm
 
 // --- INDEXEDDB V2 (SOPORTE DE BLOBS SEGURO) ---
 const DB_NAME = 'IUBVaultDB_v2';
-const DB_VERSION = 1;
+const DB_VERSION = 2; // v2: agrega el store "documents" (borradores del lienzo S-Pen con strokes)
 const STORE_NAME = 'uploadQueue';
+const DOCS_STORE_NAME = 'documents';
 
 const dbPromise = new Promise((resolve, reject) => {
     const request = indexedDB.open(DB_NAME, DB_VERSION);
     request.onupgradeneeded = (e) => {
         const db = e.target.result;
         if (!db.objectStoreNames.contains(STORE_NAME)) db.createObjectStore(STORE_NAME, { keyPath: 'tempId' });
+        if (!db.objectStoreNames.contains(DOCS_STORE_NAME)) db.createObjectStore(DOCS_STORE_NAME, { keyPath: 'localId' });
     };
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(request.error);
 });
+
+// --- PERSISTENCIA DE BORRADORES (documento con strokes, sobrevive a cerrar la PWA) ---
+async function saveDraft(docObj) {
+    const db = await dbPromise;
+    return new Promise((resolve, reject) => {
+        const tx = db.transaction(DOCS_STORE_NAME, 'readwrite');
+        tx.objectStore(DOCS_STORE_NAME).put(docObj);
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+    });
+}
+async function deleteDraft(localId) {
+    const db = await dbPromise;
+    return new Promise((resolve) => {
+        const tx = db.transaction(DOCS_STORE_NAME, 'readwrite');
+        tx.objectStore(DOCS_STORE_NAME).delete(localId);
+        tx.oncomplete = () => resolve();
+    });
+}
+async function getAllDrafts() {
+    const db = await dbPromise;
+    return new Promise((resolve) => {
+        const request = db.transaction(DOCS_STORE_NAME, 'readonly').objectStore(DOCS_STORE_NAME).getAll();
+        request.onsuccess = () => resolve(request.result || []);
+        request.onerror = () => resolve([]);
+    });
+}
 
 async function addToQueue(payload) {
     const db = await dbPromise;
@@ -44,20 +73,40 @@ async function removeFromQueue(tempId) {
 }
 
 // --- UTILIDADES ---
-function compressFileToBlob(file) {
+const PHOTO_MAX_WIDTH = 2200; // antes 1920: más legible para letra pequeña de pizarra/fórmulas
+
+// Comprime y corrige la orientación EXIF (evita fotos que se ven rotadas 90°/180°).
+async function compressFileToBlob(file) {
+    if (window.createImageBitmap) {
+        try {
+            const bitmap = await createImageBitmap(file, { imageOrientation: 'from-image' });
+            const blob = await bitmapToBlob(bitmap);
+            bitmap.close();
+            return blob;
+        } catch (e) { /* algunos navegadores no soportan la opción; usar fallback */ }
+    }
+    return compressFileToBlobFallback(file);
+}
+function bitmapToBlob(bitmap) {
+    const canvas = document.createElement('canvas');
+    let width = bitmap.width, height = bitmap.height;
+    if (width > PHOTO_MAX_WIDTH) { height = Math.round(height * PHOTO_MAX_WIDTH / width); width = PHOTO_MAX_WIDTH; }
+    canvas.width = width; canvas.height = height;
+    canvas.getContext('2d').drawImage(bitmap, 0, 0, width, height);
+    return new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.85));
+}
+function compressFileToBlobFallback(file) {
     return new Promise((resolve) => {
         const reader = new FileReader();
         reader.onload = (e) => {
             const img = new Image();
             img.onload = () => {
                 const canvas = document.createElement('canvas');
-                const MAX_WIDTH = 1920;
-                let width = img.width; let height = img.height;
-                if (width > MAX_WIDTH) { height *= MAX_WIDTH / width; width = MAX_WIDTH; }
+                let width = img.width, height = img.height;
+                if (width > PHOTO_MAX_WIDTH) { height = Math.round(height * PHOTO_MAX_WIDTH / width); width = PHOTO_MAX_WIDTH; }
                 canvas.width = width; canvas.height = height;
-                const ctx = canvas.getContext('2d');
-                ctx.drawImage(img, 0, 0, width, height);
-                canvas.toBlob((blob) => resolve(blob), 'image/jpeg', 0.8);
+                canvas.getContext('2d').drawImage(img, 0, 0, width, height);
+                canvas.toBlob((blob) => resolve(blob), 'image/jpeg', 0.85);
             };
             img.src = e.target.result;
         };
@@ -160,6 +209,10 @@ function initApp() {
 
     const versionTag = el('appVersionTag');
     if (versionTag) versionTag.textContent = 'Versión ' + APP_VERSION;
+
+    renderThicknessRow();
+    updateToolButtons();
+    if (sessionPin) checkForDrafts();
 
     // Nota: no se registra Service Worker. Después de varias pruebas, mezclar
     // versiones cacheadas de HTML/JS terminaba rompiendo la app en el celular.
@@ -645,130 +698,472 @@ async function addComentarioARegistro(idRegistro, texto) {
     updateQueueBadge(); processQueue();
 }
 
-// --- MOTOR S-PEN V2 (120HZ ALTA PRECISIÓN Y AUTO-COMMIT) ---
-const canvasOverlay = el('drawingOverlay'), canvas = el('canvasNote'), ctx = canvas.getContext('2d', { desynchronized: true });
+// ============================================================================
+// MOTOR S-PEN V3: documento multicapa (background + ink) con coordenadas de
+// documento independientes del viewport, zoom/pan real, undo/redo, borrador,
+// grosor configurable y autoguardado a IndexedDB (recuperable si se cierra la PWA).
+// ============================================================================
+const canvasOverlay = el('drawingOverlay');
 const canvasScrollArea = el('canvasScrollArea');
+const canvasStack = el('canvasStack');
+const bgCanvas = el('bgCanvas'), inkCanvas = el('inkCanvas');
+const bgCtx = bgCanvas.getContext('2d');
+const inkCtx = inkCanvas.getContext('2d', { desynchronized: true });
 const bgRow = el('bgRow');
-let isDrawing = false, lastMid = null, currentColor = '#000000', currentBg = 'bg-white';
-let canvasBackgroundImage = null; // foto sobre la que se está anotando con el S-Pen (o null = hoja en blanco)
+const toolPenBtn = el('toolPen'), toolEraserBtn = el('toolEraser');
+const thicknessRow = el('thicknessRow');
+const btnUndo = el('btnUndo'), btnRedo = el('btnRedo');
+const togglePressureBtn = el('togglePressure');
+const draftBanner = el('draftBanner'), draftBannerSub = el('draftBannerSub');
+const btnResumeDraft = el('btnResumeDraft'), btnDiscardDraft = el('btnDiscardDraft');
 
-const SHEET_HEIGHT_FACTOR = 2.5; // la hoja es 2.5x más alta que la pantalla, para tener espacio real de sobra donde escribir
+const SHEET_HEIGHT_FACTOR = 2.5; // la hoja "documento" es 2.5x más alta que la pantalla al crearse
+const THICKNESS_OPTIONS = [1, 2, 3, 4, 6, 8];
+const CANVAS_DPR = Math.min(window.devicePixelRatio || 1, 2.5); // límite razonable: nítido sin canvas gigantes
 
-function resizeCanvas() {
-    canvas.width = window.innerWidth;
-    canvas.height = Math.round(canvasScrollArea.clientHeight * SHEET_HEIGHT_FACTOR) || Math.round(window.innerHeight * SHEET_HEIGHT_FACTOR);
-    clearCanvasUI();
-    canvasScrollArea.scrollTop = 0;
+let currentColor = '#000000';
+let currentTool = 'pen'; // 'pen' | 'eraser'
+let selectedWidth = 3;
+let pressureEnabled = true;
+
+// --- DOCUMENTO (fuente de verdad de la sesión de edición actual) ---
+// doc.meta.docWidth/docHeight = tamaño FIJO en px CSS, definido una sola vez al crear
+// el documento. NUNCA cambia por resize/rotación/zoom: así resize/orientación jamás
+// pueden perder o deformar strokes ya dibujados.
+let doc = null;
+let redoStack = [];
+let currentStroke = null;
+let activePointerId = null;
+let autosaveTimer = null;
+let pendingBgBlob = null; // blob original de la foto (para subir sin recomprimir si no se anotó nada)
+
+function newDoc(materiaTema, backgroundImg, backgroundBlob) {
+    const viewW = window.innerWidth;
+    const viewH = Math.round((canvasScrollArea.clientHeight || window.innerHeight) * SHEET_HEIGHT_FACTOR);
+    return {
+        localId: makeId(),
+        materia: materiaTema.materia, tema: materiaTema.tema, cuatrimestre: materiaTema.cuatrimestre,
+        background: backgroundImg ? { hasImage: true, naturalWidth: backgroundImg.width, naturalHeight: backgroundImg.height, blob: backgroundBlob } : { hasImage: false },
+        strokes: [],
+        text: [],      // reservado para una futura capa de texto sobre el lienzo (no usado todavía)
+        comments: [],  // reservado (los comentarios reales viven en el registro, no en el borrador)
+        meta: { docWidth: viewW, docHeight: viewH, bgPattern: 'bg-white', createdAt: Date.now(), updatedAt: Date.now() }
+    };
 }
-function clearCanvasUI() {
-    ctx.fillStyle = "white"; ctx.fillRect(0, 0, canvas.width, canvas.height);
-    if (canvasBackgroundImage) {
-        // La foto ocupa solo la mitad superior del ancho, dejando el resto de la hoja libre para escribir.
-        const img = canvasBackgroundImage;
-        const maxW = canvas.width * 0.9;
-        const maxH = canvas.height * 0.45;
-        const scale = Math.min(maxW / img.width, maxH / img.height);
-        const w = img.width * scale, h = img.height * scale;
-        const x = (canvas.width - w) / 2, y = 20;
-        ctx.drawImage(img, x, y, w, h);
 
-        // Rayas debajo de la foto: dejan claro que ahí se escribe, en toda la hoja restante.
-        ctx.strokeStyle = '#e5e7eb'; ctx.lineWidth = 1;
-        for (let i = y + h + 28; i < canvas.height; i += 32) { ctx.beginPath(); ctx.moveTo(16, i); ctx.lineTo(canvas.width - 16, i); ctx.stroke(); }
+// --- IndexedDB: autoguardado con debounce (nunca en cada pointermove) ---
+function scheduleAutosave() {
+    if (!doc) return;
+    if (autosaveTimer) clearTimeout(autosaveTimer);
+    autosaveTimer = setTimeout(autosaveNow, 700);
+}
+async function autosaveNow() {
+    if (!doc) return;
+    doc.meta.updatedAt = Date.now();
+    try { await saveDraft(doc); } catch (e) { /* almacenamiento lleno u otro fallo: no bloquea la escritura en curso */ }
+}
+async function loadBackgroundImageFromBlob(blob) {
+    const url = URL.createObjectURL(blob);
+    const img = new Image();
+    await new Promise((resolve) => { img.onload = resolve; img.onerror = resolve; img.src = url; });
+    return img;
+}
+
+// --- RENDER: reconstruible en cualquier momento desde el documento ---
+function layoutCanvasStack() {
+    const w = doc.meta.docWidth, h = doc.meta.docHeight;
+    canvasStack.style.width = w + 'px';
+    canvasStack.style.height = h + 'px';
+    [bgCanvas, inkCanvas].forEach((c) => {
+        c.style.width = w + 'px';
+        c.style.height = h + 'px';
+        c.width = Math.round(w * CANVAS_DPR);
+        c.height = Math.round(h * CANVAS_DPR);
+    });
+    bgCtx.setTransform(CANVAS_DPR, 0, 0, CANVAS_DPR, 0, 0);
+    inkCtx.setTransform(CANVAS_DPR, 0, 0, CANVAS_DPR, 0, 0);
+}
+
+let bgImageEl = null; // Image ya decodificada del fondo (si hay foto)
+
+function renderBackground() {
+    const w = doc.meta.docWidth, h = doc.meta.docHeight;
+    bgCtx.clearRect(0, 0, w, h);
+    bgCtx.fillStyle = "white"; bgCtx.fillRect(0, 0, w, h);
+
+    if (doc.background.hasImage && bgImageEl) {
+        const img = bgImageEl;
+        const maxW = w * 0.9, maxH = h * 0.45;
+        const scale = Math.min(maxW / img.width, maxH / img.height);
+        const iw = img.width * scale, ih = img.height * scale;
+        const ix = (w - iw) / 2, iy = 20;
+        bgCtx.drawImage(img, ix, iy, iw, ih);
+        bgCtx.strokeStyle = '#e5e7eb'; bgCtx.lineWidth = 1;
+        for (let i = iy + ih + 28; i < h; i += 32) { bgCtx.beginPath(); bgCtx.moveTo(16, i); bgCtx.lineTo(w - 16, i); bgCtx.stroke(); }
         return;
     }
-    if (currentBg === 'bg-lines') {
-        ctx.strokeStyle = '#e5e7eb'; ctx.lineWidth = 1;
-        for (let i = 24; i < canvas.height; i += 24) { ctx.beginPath(); ctx.moveTo(0, i); ctx.lineTo(canvas.width, i); ctx.stroke(); }
-    } else if (currentBg === 'bg-grid') {
-        ctx.strokeStyle = '#e5e7eb'; ctx.lineWidth = 1;
-        for (let i = 24; i < canvas.height; i += 24) { ctx.beginPath(); ctx.moveTo(0, i); ctx.lineTo(canvas.width, i); ctx.stroke(); }
-        for (let j = 24; j < canvas.width; j += 24) { ctx.beginPath(); ctx.moveTo(j, 0); ctx.lineTo(j, canvas.height); ctx.stroke(); }
+    const pattern = doc.meta.bgPattern;
+    if (pattern === 'bg-lines') {
+        bgCtx.strokeStyle = '#e5e7eb'; bgCtx.lineWidth = 1;
+        for (let i = 24; i < h; i += 24) { bgCtx.beginPath(); bgCtx.moveTo(0, i); bgCtx.lineTo(w, i); bgCtx.stroke(); }
+    } else if (pattern === 'bg-grid') {
+        bgCtx.strokeStyle = '#e5e7eb'; bgCtx.lineWidth = 1;
+        for (let i = 24; i < h; i += 24) { bgCtx.beginPath(); bgCtx.moveTo(0, i); bgCtx.lineTo(w, i); bgCtx.stroke(); }
+        for (let j = 24; j < w; j += 24) { bgCtx.beginPath(); bgCtx.moveTo(j, 0); bgCtx.lineTo(j, h); bgCtx.stroke(); }
     }
 }
 
-// Abre el lienzo con la foto ya cargada de fondo para poder escribir/dibujar encima con el S-Pen.
+function widthForPoint(stroke, point) {
+    if (stroke.tool === 'eraser') return stroke.width * 2.4;
+    if (!stroke.pressureEnabled) return stroke.width;
+    // pressureCurve: modulación suave (0.35x - 1.6x del grosor elegido), nunca depende SOLO de pressure*5+1
+    const curved = Math.pow(point.p, 0.65); // curva suave: la presión baja no adelgaza demasiado
+    return Math.max(0.6, stroke.width * (0.35 + curved * 1.25));
+}
+
+function drawStroke(context, stroke) {
+    if (stroke.points.length === 0) return;
+    context.save();
+    context.lineCap = 'round'; context.lineJoin = 'round';
+    if (stroke.tool === 'eraser') { context.globalCompositeOperation = 'destination-out'; context.strokeStyle = 'rgba(0,0,0,1)'; }
+    else { context.globalCompositeOperation = 'source-over'; context.strokeStyle = stroke.color; }
+
+    if (stroke.points.length === 1) {
+        const p = stroke.points[0];
+        context.fillStyle = context.strokeStyle;
+        context.beginPath(); context.arc(p.x, p.y, widthForPoint(stroke, p) / 2, 0, Math.PI * 2); context.fill();
+        context.restore();
+        return;
+    }
+    for (let i = 1; i < stroke.points.length; i++) {
+        const p0 = stroke.points[i - 1], p1 = stroke.points[i];
+        const mid = { x: (p0.x + p1.x) / 2, y: (p0.y + p1.y) / 2 };
+        context.lineWidth = widthForPoint(stroke, p1);
+        context.beginPath();
+        context.moveTo(p0.x, p0.y);
+        context.quadraticCurveTo(p0.x, p0.y, mid.x, mid.y);
+        context.stroke();
+    }
+    context.restore();
+}
+
+// Reconstrucción TOTAL de la capa de tinta desde doc.strokes (undo/redo/carga de borrador).
+function renderInk() {
+    inkCtx.clearRect(0, 0, doc.meta.docWidth, doc.meta.docHeight);
+    for (const s of doc.strokes) drawStroke(inkCtx, s);
+}
+
+function renderAll() { layoutCanvasStack(); renderBackground(); renderInk(); }
+
+// --- COORDENADAS: única función central, sin duplicar cálculos en ningún otro lugar ---
+// viewport (clientX/Y) -> boundingClientRect (ya refleja scroll/zoom/pan vía CSS transform)
+// -> coordenadas de documento (independientes de DPR, zoom y resolución interna del canvas).
+function getDocumentPoint(e) {
+    const rect = inkCanvas.getBoundingClientRect();
+    const scaleX = rect.width / doc.meta.docWidth;
+    const scaleY = rect.height / doc.meta.docHeight;
+    return {
+        x: (e.clientX - rect.left) / scaleX,
+        y: (e.clientY - rect.top) / scaleY,
+        p: (e.pressure && e.pressure > 0) ? e.pressure : 0.5
+    };
+}
+
+// --- CICLO DE VIDA DEL TRAZO ---
+function startStroke(pt) {
+    currentStroke = { id: makeId(), tool: currentTool, color: currentColor, width: selectedWidth, pressureEnabled, points: [pt] };
+    drawStroke(inkCtx, currentStroke); // punto inicial visible de inmediato
+}
+function extendStroke(pt) {
+    if (!currentStroke) return;
+    const prevLen = currentStroke.points.length;
+    currentStroke.points.push(pt);
+    // Dibuja SOLO el segmento nuevo (incremental) — nunca se repinta todo en pointermove.
+    drawStroke(inkCtx, { ...currentStroke, points: currentStroke.points.slice(Math.max(0, prevLen - 1)) });
+}
+function finishStroke() {
+    if (!currentStroke) return;
+    if (currentStroke.points.length > 0) {
+        doc.strokes.push(currentStroke);
+        redoStack = []; // una acción nueva invalida el historial de rehacer
+        updateUndoRedoButtons();
+        scheduleAutosave();
+    }
+    currentStroke = null;
+}
+
+// --- PUNTERO: pen/mouse escriben; touch nunca genera tinta (lo usa el zoom/pan) ---
+inkCanvas.addEventListener('pointerdown', (e) => {
+    if (e.pointerType !== 'pen' && e.pointerType !== 'mouse') return;
+    if (activePointerId !== null) return; // ya hay un trazo en curso, ignora punteros extra
+    activePointerId = e.pointerId;
+    try { inkCanvas.setPointerCapture(e.pointerId); } catch (err) {}
+    startStroke(getDocumentPoint(e));
+});
+inkCanvas.addEventListener('pointermove', (e) => {
+    if (e.pointerId !== activePointerId) return;
+    const events = e.getCoalescedEvents ? e.getCoalescedEvents() : [e];
+    for (const ev of events) extendStroke(getDocumentPoint(ev));
+});
+function endActiveStroke(e) {
+    if (e.pointerId !== activePointerId) return;
+    activePointerId = null;
+    try { inkCanvas.releasePointerCapture(e.pointerId); } catch (err) {}
+    finishStroke();
+}
+inkCanvas.addEventListener('pointerup', endActiveStroke);
+inkCanvas.addEventListener('pointercancel', endActiveStroke);
+// lostpointercapture es la red de seguridad real (el sistema puede quitar la captura sin pointerup/cancel).
+inkCanvas.addEventListener('lostpointercapture', (e) => {
+    if (e.pointerId === activePointerId) { activePointerId = null; finishStroke(); }
+});
+
+// --- ZOOM / PAN (solo dedo) — reutilizable: lienzo de escritura y visor de fotos ---
+function createZoomPanController(container, target, opts) {
+    const cfg = Object.assign({ minScale: 1, maxScale: 4, doubleTapScale: 2.5, panWhenUnzoomed: false, pointerFilter: null, getBounds: null, onChange: null }, opts || {});
+    const state = { scale: 1, tx: 0, ty: 0 };
+    const pointers = new Map();
+    let pinchStartDist = 0, pinchStartScale = 1, pinchStartMid = null, pinchStartTx = 0, pinchStartTy = 0;
+    let dragStart = null, dragStartTx = 0, dragStartTy = 0;
+    let lastTap = 0;
+
+    function apply() {
+        target.style.transform = `translate(${state.tx}px, ${state.ty}px) scale(${state.scale})`;
+        if (cfg.onChange) cfg.onChange(state);
+    }
+    function clampState() {
+        state.scale = Math.min(cfg.maxScale, Math.max(cfg.minScale, state.scale));
+        if (cfg.getBounds) {
+            const b = cfg.getBounds(state.scale);
+            state.tx = Math.min(b.maxTx, Math.max(b.minTx, state.tx));
+            state.ty = Math.min(b.maxTy, Math.max(b.minTy, state.ty));
+        }
+    }
+    function reset() { state.scale = 1; state.tx = 0; state.ty = 0; clampState(); apply(); }
+
+    container.addEventListener('pointerdown', (e) => {
+        if (cfg.pointerFilter && !cfg.pointerFilter(e)) return;
+        pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+        try { container.setPointerCapture(e.pointerId); } catch (err) {}
+        if (pointers.size === 1) {
+            dragStart = { x: e.clientX, y: e.clientY }; dragStartTx = state.tx; dragStartTy = state.ty;
+            const now = Date.now();
+            if (now - lastTap < 280) {
+                state.scale = state.scale > 1.05 ? 1 : cfg.doubleTapScale;
+                if (state.scale === 1) { state.tx = 0; state.ty = 0; }
+                clampState(); apply();
+            }
+            lastTap = now;
+        } else if (pointers.size === 2) {
+            const pts = Array.from(pointers.values());
+            pinchStartDist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y) || 1;
+            pinchStartScale = state.scale;
+            pinchStartMid = { x: (pts[0].x + pts[1].x) / 2, y: (pts[0].y + pts[1].y) / 2 };
+            pinchStartTx = state.tx; pinchStartTy = state.ty;
+        }
+    });
+    container.addEventListener('pointermove', (e) => {
+        if (!pointers.has(e.pointerId)) return;
+        pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+        if (pointers.size === 2) {
+            const pts = Array.from(pointers.values());
+            const dist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y) || 1;
+            const mid = { x: (pts[0].x + pts[1].x) / 2, y: (pts[0].y + pts[1].y) / 2 };
+            state.scale = pinchStartScale * (dist / pinchStartDist);
+            state.tx = pinchStartTx + (mid.x - pinchStartMid.x);
+            state.ty = pinchStartTy + (mid.y - pinchStartMid.y);
+            clampState(); apply();
+        } else if (pointers.size === 1 && dragStart && (state.scale > 1.01 || cfg.panWhenUnzoomed)) {
+            state.tx = dragStartTx + (e.clientX - dragStart.x);
+            state.ty = dragStartTy + (e.clientY - dragStart.y);
+            clampState(); apply();
+        }
+    });
+    function endPointer(e) {
+        pointers.delete(e.pointerId);
+        try { container.releasePointerCapture(e.pointerId); } catch (err) {}
+        if (pointers.size < 2) pinchStartDist = 0;
+        if (pointers.size === 0) dragStart = null;
+    }
+    container.addEventListener('pointerup', endPointer);
+    container.addEventListener('pointercancel', endPointer);
+    container.addEventListener('lostpointercapture', endPointer);
+
+    return { state, apply, clampState, reset };
+}
+
+const canvasZoomPan = createZoomPanController(canvasScrollArea, canvasStack, {
+    minScale: 1, maxScale: 3, panWhenUnzoomed: true,
+    pointerFilter: (e) => e.pointerType === 'touch',
+    getBounds: (scale) => {
+        const viewW = canvasScrollArea.clientWidth, viewH = canvasScrollArea.clientHeight;
+        const contentW = doc.meta.docWidth * scale, contentH = doc.meta.docHeight * scale;
+        return { minTx: Math.min(0, viewW - contentW), maxTx: 0, minTy: Math.min(0, viewH - contentH), maxTy: 0 };
+    }
+});
+
+// --- HERRAMIENTAS: grosor, lápiz/borrador, presión, deshacer/rehacer ---
+function renderThicknessRow() {
+    thicknessRow.innerHTML = '';
+    THICKNESS_OPTIONS.forEach((w) => {
+        const btn = document.createElement('button');
+        btn.className = 'w-7 h-7 rounded-full bg-gray-700 flex items-center justify-center shrink-0' + (w === selectedWidth ? ' ring-2 ring-white' : '');
+        const dot = document.createElement('span');
+        const size = Math.min(w * 1.7, 18);
+        dot.style.cssText = `width:${size}px;height:${size}px;border-radius:50%;background:white;display:block;`;
+        btn.appendChild(dot);
+        btn.onclick = () => { selectedWidth = w; renderThicknessRow(); };
+        thicknessRow.appendChild(btn);
+    });
+}
+function updateToolButtons() {
+    toolPenBtn.className = 'text-xs px-2.5 py-1.5 rounded-lg font-bold shrink-0 ' + (currentTool === 'pen' ? 'bg-blue-600 text-white' : 'bg-gray-700 text-gray-300');
+    toolEraserBtn.className = 'text-xs px-2.5 py-1.5 rounded-lg font-bold shrink-0 ' + (currentTool === 'eraser' ? 'bg-blue-600 text-white' : 'bg-gray-700 text-gray-300');
+}
+toolPenBtn.addEventListener('click', () => { currentTool = 'pen'; updateToolButtons(); });
+toolEraserBtn.addEventListener('click', () => { currentTool = 'eraser'; updateToolButtons(); });
+togglePressureBtn.addEventListener('click', () => {
+    pressureEnabled = !pressureEnabled;
+    togglePressureBtn.textContent = 'Presión: ' + (pressureEnabled ? 'ON' : 'OFF');
+});
+function updateUndoRedoButtons() {
+    btnUndo.disabled = !doc || doc.strokes.length === 0;
+    btnRedo.disabled = redoStack.length === 0;
+    btnUndo.classList.toggle('opacity-40', btnUndo.disabled);
+    btnRedo.classList.toggle('opacity-40', btnRedo.disabled);
+}
+btnUndo.addEventListener('click', () => {
+    if (!doc || doc.strokes.length === 0) return;
+    redoStack.push(doc.strokes.pop());
+    renderInk(); updateUndoRedoButtons(); scheduleAutosave();
+});
+btnRedo.addEventListener('click', () => {
+    if (redoStack.length === 0) return;
+    doc.strokes.push(redoStack.pop());
+    renderInk(); updateUndoRedoButtons(); scheduleAutosave();
+});
+
+document.querySelectorAll('.tool-color').forEach((btn) => {
+    btn.addEventListener('click', (e) => {
+        document.querySelectorAll('.tool-color').forEach((b) => b.classList.remove('ring-2', 'ring-gray-900', 'active-tool'));
+        e.target.classList.add('ring-2', 'ring-gray-900', 'active-tool');
+        currentColor = e.target.dataset.color;
+        currentTool = 'pen'; updateToolButtons();
+    });
+});
+document.querySelectorAll('.tool-bg').forEach((btn) => {
+    btn.addEventListener('click', (e) => {
+        document.querySelectorAll('.tool-bg').forEach((b) => { b.classList.remove('bg-gray-600', 'active-bg'); b.classList.add('bg-gray-700'); });
+        e.target.classList.remove('bg-gray-700'); e.target.classList.add('bg-gray-600', 'active-bg');
+        doc.meta.bgPattern = e.target.dataset.bg;
+        renderBackground(); scheduleAutosave();
+    });
+});
+
+el('btnBorrarLienzo').addEventListener('click', () => {
+    if (!doc || doc.strokes.length === 0) return;
+    if (!confirm('¿Borrar todos los trazos de esta hoja? (la foto no se toca)')) return;
+    redoStack = []; doc.strokes = [];
+    renderInk(); updateUndoRedoButtons(); scheduleAutosave();
+});
+
+// --- ABRIR / CERRAR EL LIENZO ---
+async function openCanvasWithDocument(newDocument, bgBlob) {
+    doc = newDocument;
+    pendingBgBlob = bgBlob || null;
+    redoStack = []; currentStroke = null; activePointerId = null;
+    bgImageEl = doc.background.hasImage ? await loadBackgroundImageFromBlob(doc.background.blob) : null;
+    bgRow.classList.toggle('hide', doc.background.hasImage);
+    document.querySelectorAll('.tool-bg').forEach((b) => {
+        const active = b.dataset.bg === doc.meta.bgPattern;
+        b.classList.toggle('active-bg', active);
+        b.classList.toggle('bg-gray-600', active);
+        b.classList.toggle('bg-gray-700', !active);
+    });
+    canvasZoomPan.reset();
+    canvasOverlay.classList.remove('hide');
+    renderAll();
+    updateUndoRedoButtons();
+    await saveDraft(doc); // existe en IndexedDB desde el primer instante, incluso sin trazos
+}
+
 async function openAnnotateWithImage(file) {
     const blob = await compressFileToBlob(file);
-    const objectUrl = URL.createObjectURL(blob);
-    const img = new Image();
-    await new Promise((resolve) => { img.onload = resolve; img.onerror = resolve; img.src = objectUrl; });
-    canvasBackgroundImage = img;
-    bgRow.classList.add('hide');
-    canvasOverlay.classList.remove('hide');
-    resizeCanvas();
+    const img = await loadBackgroundImageFromBlob(blob);
+    const d = newDoc(currentContext, img, blob);
+    await openCanvasWithDocument(d, blob);
+}
+el('btnOpenNotebook').addEventListener('click', async () => {
+    if (!currentContext.materia || !currentContext.tema) { alert("⚠️ Entra a una materia y un tema primero."); return; }
+    const d = newDoc(currentContext, null, null);
+    await openCanvasWithDocument(d, null);
+});
+el('btnCerrarCanvas').addEventListener('click', () => {
+    canvasOverlay.classList.add('hide');
+    doc = null; bgImageEl = null; pendingBgBlob = null;
+    hideDraftBanner();
+});
+
+window.addEventListener('resize', () => {
+    // El documento NUNCA cambia de tamaño por resize/rotación: solo se re-emite el layout
+    // visual (la hoja sigue siendo la misma; se ve completa o se navega con zoom/scroll).
+    if (doc && !canvasOverlay.classList.contains('hide')) { layoutCanvasStack(); renderBackground(); renderInk(); }
+});
+
+el('btnGuardarCanvas').addEventListener('click', async () => {
+    if (!doc) return;
+    const tipo = doc.background.hasImage ? "ARCHIVO" : "NOTA_SPEN";
+    const finishedDocId = doc.localId;
+    canvasOverlay.classList.add('hide');
+
+    let finalBlob;
+    if (doc.background.hasImage && doc.strokes.length === 0 && pendingBgBlob) {
+        // No se escribió nada encima: sube la foto original tal cual (sin recomprimir de nuevo).
+        finalBlob = pendingBgBlob;
+    } else {
+        finalBlob = await composeFinalBlob();
+    }
+    doc = null; bgImageEl = null; pendingBgBlob = null;
+    await commitPhotoRecord(finalBlob, tipo, true);
+    await deleteDraft(finishedDocId); // ya pasó a la cola de subida (persistente); el borrador no hace más falta
+    hideDraftBanner();
+});
+
+function composeFinalBlob() {
+    const out = document.createElement('canvas');
+    out.width = bgCanvas.width; out.height = bgCanvas.height;
+    const octx = out.getContext('2d');
+    octx.drawImage(bgCanvas, 0, 0);
+    octx.drawImage(inkCanvas, 0, 0);
+    return new Promise((resolve) => out.toBlob(resolve, 'image/jpeg', 0.92));
 }
 
-el('btnOpenNotebook').addEventListener('click', () => {
-    if (!currentContext.materia || !currentContext.tema) { alert("⚠️ Entra a una materia y un tema primero."); return; }
-    canvasBackgroundImage = null;
-    bgRow.classList.remove('hide');
-    canvasOverlay.classList.remove('hide');
-    resizeCanvas();
-});
-el('btnCerrarCanvas').addEventListener('click', () => { canvasOverlay.classList.add('hide'); canvasBackgroundImage = null; });
-el('btnBorrarLienzo').addEventListener('click', clearCanvasUI);
-
-window.addEventListener('resize', () => { if (!canvasOverlay.classList.contains('hide')) resizeCanvas(); });
-
-document.querySelectorAll('.tool-color').forEach(btn => {
-    btn.addEventListener('click', (e) => {
-        document.querySelectorAll('.tool-color').forEach(b => b.classList.remove('ring-2', 'ring-gray-900', 'active-tool'));
-        e.target.classList.add('ring-2', 'ring-gray-900', 'active-tool'); currentColor = e.target.dataset.color;
-    });
-});
-document.querySelectorAll('.tool-bg').forEach(btn => {
-    btn.addEventListener('click', (e) => {
-        document.querySelectorAll('.tool-bg').forEach(b => { b.classList.remove('bg-gray-600', 'active-bg'); b.classList.add('bg-gray-700'); });
-        e.target.classList.remove('bg-gray-700'); e.target.classList.add('bg-gray-600', 'active-bg');
-        currentBg = e.target.dataset.bg; clearCanvasUI();
-    });
-});
-
-canvas.addEventListener('pointerdown', (e) => {
-    if (e.pointerType !== 'pen' && e.pointerType !== 'mouse') return; // Palm Rejection
-    isDrawing = true;
-    const rect = canvas.getBoundingClientRect();
-    lastMid = { x: e.clientX - rect.left, y: e.clientY - rect.top };
-
-    ctx.lineWidth = e.pressure ? e.pressure * 5 + 1 : 2;
-    ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.strokeStyle = currentColor;
-
-    ctx.beginPath(); ctx.moveTo(lastMid.x, lastMid.y); ctx.lineTo(lastMid.x, lastMid.y); ctx.stroke();
-});
-
-canvas.addEventListener('pointermove', (e) => {
-    if (!isDrawing || (e.pointerType !== 'pen' && e.pointerType !== 'mouse')) return;
-
-    const events = e.getCoalescedEvents ? e.getCoalescedEvents() : [e];
-    const rect = canvas.getBoundingClientRect();
-
-    for (let ev of events) {
-        const current = { x: ev.clientX - rect.left, y: ev.clientY - rect.top };
-        const mid = { x: (lastMid.x + current.x) / 2, y: (lastMid.y + current.y) / 2 };
-
-        ctx.lineWidth = ev.pressure ? ev.pressure * 5 + 1 : 2;
-        ctx.beginPath();
-        ctx.moveTo(lastMid.x, lastMid.y);
-        ctx.quadraticCurveTo(lastMid.x, lastMid.y, mid.x, mid.y);
-        ctx.stroke();
-
-        lastMid = current;
-    }
-});
-canvas.addEventListener('pointerup', (e) => { if (e.pointerType === 'pen' || e.pointerType === 'mouse') isDrawing = false; });
-
-el('btnGuardarCanvas').addEventListener('click', () => {
-    const tipo = canvasBackgroundImage ? "ARCHIVO" : "NOTA_SPEN";
-    canvas.toBlob(async (blob) => {
-        canvasOverlay.classList.add('hide');
-        canvasBackgroundImage = null;
-        await commitPhotoRecord(blob, tipo, true);
-    }, 'image/jpeg', 0.9);
-});
+// --- RECUPERACIÓN DE BORRADOR (sobrevive a cerrar la PWA) ---
+function hideDraftBanner() { draftBanner.classList.add('hide'); }
+async function checkForDrafts() {
+    const drafts = await getAllDrafts();
+    if (drafts.length === 0) return;
+    const latest = drafts.sort((a, b) => (b.meta.updatedAt || 0) - (a.meta.updatedAt || 0))[0];
+    draftBannerSub.textContent = `${latest.materia} · ${latest.tema} · ${latest.strokes.length} trazo(s)`;
+    draftBanner.classList.remove('hide');
+    btnResumeDraft.onclick = async () => {
+        hideDraftBanner();
+        openMateria(latest.materia);
+        openTema(latest.materia, latest.tema);
+        await openCanvasWithDocument(latest, latest.background.hasImage ? latest.background.blob : null);
+    };
+    btnDiscardDraft.onclick = async () => { await deleteDraft(latest.localId); hideDraftBanner(); };
+}
 
 // --- CRUD & VISOR ---
 const imageModal = el('imageModal'), fullImage = el('fullImage'), modalDate = el('modalDate'), modalTags = el('modalTags'), modalNote = el('modalNote'), modalComments = el('modalComments'), comentarioInput = el('comentarioInput');
+const imageViewerArea = el('imageViewerArea');
+
+// Visor con pinch-zoom / doble-tap / pan (dedo únicamente): mismo controlador que el lienzo S-Pen.
+const imageZoomPan = createZoomPanController(imageViewerArea, fullImage, {
+    minScale: 1, maxScale: 4, doubleTapScale: 2.5, panWhenUnzoomed: false,
+    pointerFilter: (e) => e.pointerType === 'touch' || e.pointerType === 'mouse'
+});
 
 function showModal(record, list) {
     currentRecordId = record.id;
@@ -781,6 +1176,7 @@ function showModal(record, list) {
     modalNote.textContent = record.nota || "Sin texto asociado.";
     el('btnDownload').style.display = record.url ? "flex" : "none"; el('btnShare').style.display = record.url ? "flex" : "none";
     renderModalComments(record);
+    imageZoomPan.reset(); // cada foto nueva arranca sin zoom heredado de la anterior
     imageModal.classList.remove('hide');
 }
 el('btnCloseModal').addEventListener('click', () => imageModal.classList.add('hide'));
@@ -888,23 +1284,26 @@ el('btnLimpiarCache').addEventListener('click', () => {
 // --- EXPORTACIÓN PDF PROFESIONAL (JSPDF) ---
 btnExportPDF.addEventListener('click', async () => {
     if (!currentContext.tema) return;
-    const { jsPDF } = window.jspdf; const doc = new jsPDF('p', 'mm', 'a4');
+    const { jsPDF } = window.jspdf; const pdf = new jsPDF('p', 'mm', 'a4');
     const records = localData.records
         .filter(r => r.materia === currentContext.materia && r.tema === currentContext.tema)
         .sort((a, b) => (a.fecha || "").localeCompare(b.fecha || ""));
     if (records.length === 0) return alert("No hay páginas para exportar.");
 
+    const PAGE_W = pdf.internal.pageSize.getWidth(), PAGE_H = pdf.internal.pageSize.getHeight();
+    const MARGIN = 10, MAX_Y = PAGE_H - MARGIN;
+
     btnExportPDF.textContent = "⏳";
-    doc.setFontSize(22); doc.text(currentContext.materia, 10, 20);
-    doc.setFontSize(14); doc.text(`Tema: ${currentContext.tema}`, 10, 30);
-    doc.setFontSize(10); doc.text(`Generado: ${new Date().toLocaleDateString()}`, 10, 40);
+    pdf.setFontSize(22); pdf.text(currentContext.materia, MARGIN, 20);
+    pdf.setFontSize(14); pdf.text(`Tema: ${currentContext.tema}`, MARGIN, 30);
+    pdf.setFontSize(10); pdf.text(`Generado: ${new Date().toLocaleDateString()}`, MARGIN, 40);
 
     let first = true;
     for (const rec of records) {
-        if (!first) doc.addPage();
+        if (!first) pdf.addPage();
         first = false;
         let yPos = 20;
-        doc.setFontSize(10); doc.setTextColor(0); doc.text(rec.fecha || "", 10, yPos); yPos += 8;
+        pdf.setFontSize(10); pdf.setTextColor(0); pdf.text(rec.fecha || "", MARGIN, yPos); yPos += 8;
 
         if (rec.url) {
             try {
@@ -912,27 +1311,48 @@ btnExportPDF.addEventListener('click', async () => {
                 await new Promise((resolve) => { img.onload = resolve; img.onerror = resolve; });
                 const canvasImg = document.createElement('canvas'); canvasImg.width = img.width; canvasImg.height = img.height;
                 canvasImg.getContext('2d').drawImage(img, 0, 0);
-                const dataUri = canvasImg.toDataURL('image/jpeg', 0.8);
-                const imgProps = doc.getImageProperties(dataUri);
-                const pdfWidth = doc.internal.pageSize.getWidth() - 20;
-                const pdfHeight = (imgProps.height * pdfWidth) / imgProps.width;
-                doc.addImage(dataUri, 'JPEG', 10, yPos, pdfWidth, pdfHeight);
-                yPos += pdfHeight + 8;
+                const dataUri = canvasImg.toDataURL('image/jpeg', 0.85);
+                const imgProps = pdf.getImageProperties(dataUri);
+                const pdfWidth = PAGE_W - MARGIN * 2;
+                let pdfHeight = (imgProps.height * pdfWidth) / imgProps.width;
+
+                // Respeta proporción SIEMPRE; si no cabe en una página, la escala para que quepa
+                // completa (nunca se recorta ni se deforma) y sigue con el resto debajo/en otra página.
+                const availableH = MAX_Y - yPos;
+                if (pdfHeight > availableH) {
+                    if (availableH < 40 && yPos > 25) { pdf.addPage(); yPos = 20; }
+                    const finalAvailable = MAX_Y - yPos;
+                    if (pdfHeight > finalAvailable) {
+                        const scale = finalAvailable / pdfHeight;
+                        pdf.addImage(dataUri, 'JPEG', MARGIN, yPos, pdfWidth * scale, finalAvailable);
+                        yPos += finalAvailable + 8;
+                    } else {
+                        pdf.addImage(dataUri, 'JPEG', MARGIN, yPos, pdfWidth, pdfHeight);
+                        yPos += pdfHeight + 8;
+                    }
+                } else {
+                    pdf.addImage(dataUri, 'JPEG', MARGIN, yPos, pdfWidth, pdfHeight);
+                    yPos += pdfHeight + 8;
+                }
             } catch (e) { console.error("Saltando imagen inaccesible por CORS"); }
         }
 
-        if (rec.nota) { doc.setFontSize(11); doc.text(doc.splitTextToSize("Nota: " + rec.nota, 190), 10, yPos); yPos += doc.splitTextToSize(rec.nota, 190).length * 6 + 4; }
+        if (rec.nota) {
+            const lines = pdf.splitTextToSize("Nota: " + rec.nota, 190);
+            if (yPos + lines.length * 6 > MAX_Y) { pdf.addPage(); yPos = 20; }
+            pdf.setFontSize(11); pdf.setTextColor(0); pdf.text(lines, MARGIN, yPos); yPos += lines.length * 6 + 4;
+        }
 
-        (rec.comentarios || []).forEach(c => {
-            const lines = doc.splitTextToSize(`[${c.fecha}] ${c.texto}`, 185);
-            if (yPos + lines.length * 5 > 280) { doc.addPage(); yPos = 20; }
-            doc.setFontSize(9); doc.setTextColor(90);
-            doc.text(lines, 15, yPos);
+        (rec.comentarios || []).forEach((c) => {
+            const lines = pdf.splitTextToSize(`[${c.fecha}] ${c.texto}`, 185);
+            if (yPos + lines.length * 5 > MAX_Y) { pdf.addPage(); yPos = 20; }
+            pdf.setFontSize(9); pdf.setTextColor(90);
+            pdf.text(lines, 15, yPos);
             yPos += lines.length * 5 + 2;
-            doc.setTextColor(0);
+            pdf.setTextColor(0);
         });
     }
-    doc.save(`Apuntes_${currentContext.materia}_${currentContext.tema}.pdf`);
+    pdf.save(`Apuntes_${currentContext.materia}_${currentContext.tema}.pdf`);
     btnExportPDF.textContent = "📑";
 });
 

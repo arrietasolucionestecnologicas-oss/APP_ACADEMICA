@@ -32,7 +32,8 @@
         .chip-row::-webkit-scrollbar { display: none; }
 
         #drawingOverlay { position: fixed; inset: 0; z-index: 100; background: white; display: flex; flex-direction: column; }
-        #canvasNote { cursor: crosshair; }
+        #inkCanvas { cursor: crosshair; touch-action: none; }
+        #bgCanvas { touch-action: none; }
     </style>
 </head>
 <body class="text-gray-800 h-[100dvh] flex flex-col overflow-hidden">
@@ -146,10 +147,20 @@
                     <button class="w-6 h-6 rounded-full bg-red-600 border-2 border-white tool-color" data-color="#dc2626"></button>
                 </div>
             </div>
-            <div class="flex gap-3">
-                <button id="btnBorrarLienzo" class="text-xs bg-gray-800 px-3 py-1.5 rounded-lg border border-gray-700">Limpiar</button>
-                <button id="btnGuardarCanvas" class="text-sm bg-blue-600 font-bold px-4 py-1.5 rounded-lg shadow active:bg-blue-700">Auto-Guardar ✔</button>
+            <button id="btnGuardarCanvas" class="text-sm bg-blue-600 font-bold px-4 py-1.5 rounded-lg shadow active:bg-blue-700">Auto-Guardar ✔</button>
+        </div>
+        <div class="bg-gray-800 p-2 flex items-center gap-2 shrink-0 border-b border-gray-700 overflow-x-auto" style="scrollbar-width:none;">
+            <div class="flex gap-1 shrink-0">
+                <button id="toolPen" class="text-xs px-2.5 py-1.5 rounded-lg bg-blue-600 text-white font-bold shrink-0">✍️ Lápiz</button>
+                <button id="toolEraser" class="text-xs px-2.5 py-1.5 rounded-lg bg-gray-700 text-gray-300 font-bold shrink-0">🧽 Borrador</button>
             </div>
+            <div class="flex gap-1 items-center shrink-0 px-1" id="thicknessRow"></div>
+            <div class="flex gap-1 shrink-0">
+                <button id="btnUndo" class="text-xs w-8 h-8 rounded-lg bg-gray-700 text-gray-300 font-bold shrink-0" disabled>↶</button>
+                <button id="btnRedo" class="text-xs w-8 h-8 rounded-lg bg-gray-700 text-gray-300 font-bold shrink-0" disabled>↷</button>
+                <button id="btnBorrarLienzo" class="text-[10px] px-2 h-8 rounded-lg bg-gray-700 text-gray-300 font-bold shrink-0">Borrar todo</button>
+            </div>
+            <button id="togglePressure" class="text-[10px] px-2 py-1.5 rounded-lg bg-gray-700 text-gray-300 font-bold shrink-0">Presión: ON</button>
         </div>
         <div id="bgRow" class="bg-gray-800 p-2 flex justify-center gap-4 shrink-0 border-b border-gray-700">
             <span class="text-xs text-gray-400 font-semibold uppercase self-center">Fondo:</span>
@@ -157,10 +168,23 @@
             <button class="text-xs bg-gray-700 text-white px-2 py-1 rounded tool-bg" data-bg="bg-lines">Raya</button>
             <button class="text-xs bg-gray-700 text-white px-2 py-1 rounded tool-bg" data-bg="bg-grid">Cuadro</button>
         </div>
-        <div id="canvasScrollArea" class="flex-1 overflow-y-auto overflow-x-hidden bg-white">
-            <canvas id="canvasNote" class="bg-white block" style="touch-action: pan-y;"></canvas>
+        <div id="canvasScrollArea" class="flex-1 overflow-hidden bg-gray-200" style="touch-action: none;">
+            <div id="canvasStack" style="position:relative; transform-origin: 0 0; margin: 0 auto;">
+                <canvas id="bgCanvas" class="block" style="position:absolute; top:0; left:0;"></canvas>
+                <canvas id="inkCanvas" class="block" style="position:absolute; top:0; left:0;"></canvas>
+            </div>
         </div>
-        <p class="text-center text-[10px] text-gray-400 py-1 bg-gray-50 shrink-0">↕ Desliza con el dedo para ver más hoja · escribe con el S-Pen</p>
+        <p id="canvasHint" class="text-center text-[10px] text-gray-400 py-1 bg-gray-50 shrink-0">↕ Dedo: desliza/pellizca para zoom · S-Pen: escribe</p>
+    </div>
+
+    <div id="draftBanner" class="hide fixed left-3 right-3 z-30 bg-amber-50 border border-amber-300 rounded-2xl shadow-lg p-3 flex items-center gap-3" style="bottom: 90px;">
+        <span class="text-xl">📝</span>
+        <div class="flex-1">
+            <p class="text-xs font-bold text-amber-900">Tienes una página sin terminar</p>
+            <p id="draftBannerSub" class="text-[10px] text-amber-700"></p>
+        </div>
+        <button id="btnResumeDraft" class="bg-amber-600 text-white text-xs font-bold px-3 py-1.5 rounded-full shrink-0">Continuar</button>
+        <button id="btnDiscardDraft" class="text-amber-400 text-lg shrink-0 px-1">✕</button>
     </div>
 
     <div id="imageModal" class="absolute inset-0 bg-black/95 z-[150] hide flex flex-col backdrop-blur-sm">
@@ -171,9 +195,9 @@
             </div>
             <button id="btnCloseModal" class="text-white/80 hover:text-white text-4xl font-light">×</button>
         </div>
-        <div class="flex-1 flex justify-center items-center p-2 overflow-hidden relative">
+        <div id="imageViewerArea" class="flex-1 flex justify-center items-center p-2 overflow-hidden relative" style="touch-action:none;">
             <button id="btnMoveLeft" class="absolute left-2 text-white bg-black/50 p-3 rounded-full text-xl z-20 backdrop-blur-md">‹</button>
-            <img id="fullImage" class="max-w-full max-h-full object-contain rounded-sm">
+            <img id="fullImage" class="max-w-full max-h-full object-contain rounded-sm" style="transform-origin:center center;">
             <button id="btnMoveRight" class="absolute right-2 text-white bg-black/50 p-3 rounded-full text-xl z-20 backdrop-blur-md">›</button>
         </div>
         <div class="bg-[#111] border-t border-gray-800 flex justify-around p-4 shrink-0 pb-8">
